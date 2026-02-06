@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "items_light_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "menu": {
+      "type": "array",
+      "description": "Line items. Keep raw strings exactly as printed; do not normalize.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nm": { "type": ["string", "null"], "description": "Item name as printed." },
+          "cnt": { "type": ["string", "null"], "description": "Quantity as printed (e.g. '1', '1x', 'x1', '1 X')." },
+          "unitprice": { "type": ["string", "null"], "description": "Unit price as printed (e.g. '@20.000', 'Rp 30,000')." },
+          "price": { "type": ["string", "null"], "description": "Line total as printed (e.g. '58,000', '36.000', '181,500.00')." },
+          "discountprice": { "type": ["string", "null"], "description": "Discount as printed (e.g. '-7,800'), if present." },
+          "num": { "type": ["string", "null"], "description": "Item code/number if present." },
+
+          "sub": {
+            "description": "Modifiers (CORD sub). Keep structure as on receipt; can be object, array, or null.",
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "nm": { "type": ["string", "null"] },
+                  "cnt": { "type": ["string", "null"] }
+                },
+                "required": ["nm", "cnt"]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "nm": { "type": ["string", "null"] },
+                    "cnt": { "type": ["string", "null"] }
+                  },
+                  "required": ["nm", "cnt"]
+                }
+              },
+              { "type": "null" }
+            ]
+          }
+        },
+        "required": ["nm", "cnt", "unitprice", "price", "discountprice", "num", "sub"]
+      }
+    }
+  },
+  "required": ["menu"]
+}

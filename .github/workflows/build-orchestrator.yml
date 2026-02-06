@@ -1,0 +1,98 @@
+name: Build & Push CPU Orchestrator Image
+
+on:
+  # Ручной запуск из UI
+  workflow_dispatch:
+    inputs:
+      push_latest:
+        description: "Also push :latest tag"
+        required: false
+        default: "false"
+
+  # Автозапуск только по тегам вида orch-vX.Y.Z
+  push:
+    tags:
+      - "orch-v*"
+
+
+concurrency:
+  group: orchestrator-image
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/ocrlty-orchestrator
+
+jobs:
+  build_and_push:
+    # На PR мы просто билдим (без push), на tag/dispatch — push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR (only when pushing)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Default: tag by sha (always useful)
+          SHA_TAG="sha-${GITHUB_SHA::12}"
+
+          # If triggered by git tag, use that tag name too
+          REF_TAG=""
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            REF_TAG="${GITHUB_REF_NAME}"
+          fi
+
+          # If manual run and push_latest=true, also push :latest
+          PUSH_LATEST="${{ github.event.inputs.push_latest || 'false' }}"
+
+          TAGS="${{ env.IMAGE_NAME }}:${SHA_TAG}"
+          if [[ -n "${REF_TAG}" ]]; then
+            TAGS="${TAGS},${{ env.IMAGE_NAME }}:${REF_TAG}"
+          fi
+          if [[ "${PUSH_LATEST}" == "true" ]]; then
+            TAGS="${TAGS},${{ env.IMAGE_NAME }}:latest"
+          fi
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "Will use tags: ${TAGS}"
+
+      - name: Build (PR no push)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & Push (tag or manual)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

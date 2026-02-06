@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "payment_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "total": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Total amount on the receipt."
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "3-letter ISO 4217 currency code in UPPERCASE (e.g., EUR, UAH). Return null if not explicitly shown on the receipt. No explanations.",
+      "pattern": "^[A-Z]{3}$",
+      "minLength": 3,
+      "maxLength": 3
+    },
+    "cash": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Amount paid in cash (if present)."
+    },
+    "card": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Amount paid by card (if present)."
+    },
+    "change": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Change given back to customer (if present)."
+    },
+    "paid_amount": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Amount tendered by customer (if present)."
+    },
+    "payment_method": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Payment method: one of cash|card|mixed|unknown. Return unknown if not explicitly indicated.",
+      "enum": [
+        "cash",
+        "card",
+        "mixed",
+        "unknown",
+        null
+      ]
+    }
+  },
+  "required": [
+    "total",
+    "currency",
+    "cash",
+    "card",
+    "change",
+    "paid_amount",
+    "payment_method"
+  ]
+}
