@@ -20,6 +20,8 @@ import time
 import uuid
 import tarfile
 import tempfile
+import sqlite3
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +56,18 @@ DATA_ROOT = APP_ROOT.parent.resolve()
 DEFAULT_IMAGES_DIR = str((DATA_ROOT / "data").resolve())
 
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
+
+
+# ---------------------------
+# Artifact index (SQLite, best-effort)
+# ---------------------------
+# Speeds up artifact lookup by request_id/run_id without scanning date prefixes in S3/local.
+# This stores only metadata (no blobs). Artifacts remain in filesystem/S3.
+ARTIFACT_INDEX_ENABLED = os.getenv("ARTIFACT_INDEX_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+ARTIFACT_INDEX_DB_PATH = Path(settings.ARTIFACT_INDEX_DB_PATH).expanduser().resolve()
+
+_ARTIFACT_INDEX_LOCK = threading.Lock()
+
 MODEL_ID = settings.VLLM_MODEL
 
 
@@ -685,11 +699,38 @@ def _save_artifact(request_id: str, payload: Dict[str, Any]) -> str:
             _s3_put_json(key, payload)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to write artifact to S3: {e}")
+
+        # Best-effort SQLite index (never fail the request due to indexing).
+        try:
+            _artifact_index_upsert(
+                kind="extract",
+                artifact_id=request_id,
+                full_ref=key,
+                rel_ref=_to_artifact_rel(key),
+                day=day,
+                owner_key_id=_owner_key_id_from_payload(payload),
+            )
+        except Exception:
+            pass
+
         return key
 
     out_dir = _ensure_artifacts_dir()
     path = out_dir / f"{request_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    try:
+        _artifact_index_upsert(
+            kind="extract",
+            artifact_id=request_id,
+            full_ref=str(path),
+            rel_ref=_to_artifact_rel(path),
+            day=day,
+            owner_key_id=_owner_key_id_from_payload(payload),
+        )
+    except Exception:
+        pass
+
     return str(path)
 
 
@@ -714,6 +755,131 @@ def _to_artifact_rel(p: Union[str, Path]) -> str:
         return s
 
 
+def _artifact_index_enabled() -> bool:
+    return bool(ARTIFACT_INDEX_ENABLED)
+
+
+def _artifact_index_init() -> None:
+    if not _artifact_index_enabled():
+        return
+    try:
+        ARTIFACT_INDEX_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _ARTIFACT_INDEX_LOCK:
+            conn = sqlite3.connect(str(ARTIFACT_INDEX_DB_PATH), timeout=30.0)
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA busy_timeout=30000;")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS artifact_index (
+                        kind TEXT NOT NULL,
+                        artifact_id TEXT NOT NULL,
+                        owner_key_id TEXT,
+                        day TEXT,
+                        storage TEXT NOT NULL,
+                        full_ref TEXT NOT NULL,
+                        rel_ref TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (kind, artifact_id)
+                    );
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_artifact_index_owner_kind_day ON artifact_index(owner_key_id, kind, day);")
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception as e:
+        # Best-effort: do not fail app startup.
+        _log_event(logging.WARNING, "artifact_index_init_failed", error=str(e), db_path=str(ARTIFACT_INDEX_DB_PATH))
+
+
+def _artifact_index_upsert(
+    *, kind: str, artifact_id: str, full_ref: str, rel_ref: str, day: Optional[str], owner_key_id: Optional[str]
+) -> None:
+    if not _artifact_index_enabled():
+        return
+    try:
+        created_at = datetime.now(timezone.utc).isoformat()
+        storage = "s3" if (full_ref and not full_ref.startswith("/")) and _s3_enabled() else "local"
+        with _ARTIFACT_INDEX_LOCK:
+            conn = sqlite3.connect(str(ARTIFACT_INDEX_DB_PATH), timeout=30.0)
+            try:
+                conn.execute("PRAGMA busy_timeout=30000;")
+                conn.execute(
+                    """
+                    INSERT INTO artifact_index (kind, artifact_id, owner_key_id, day, storage, full_ref, rel_ref, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(kind, artifact_id) DO UPDATE SET
+                        owner_key_id=excluded.owner_key_id,
+                        day=excluded.day,
+                        storage=excluded.storage,
+                        full_ref=excluded.full_ref,
+                        rel_ref=excluded.rel_ref,
+                        created_at=excluded.created_at
+                    """,
+                    (kind, artifact_id, owner_key_id, day, storage, full_ref, rel_ref, created_at),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception as e:
+        # Best-effort: never fail the request due to indexing issues.
+        _log_event(logging.WARNING, "artifact_index_upsert_failed", kind=kind, artifact_id=artifact_id, error=str(e))
+
+
+def _artifact_index_get(*, kind: str, artifact_id: str) -> Optional[Dict[str, str]]:
+    if not _artifact_index_enabled():
+        return None
+    try:
+        with _ARTIFACT_INDEX_LOCK:
+            conn = sqlite3.connect(str(ARTIFACT_INDEX_DB_PATH), timeout=30.0)
+            try:
+                conn.execute("PRAGMA busy_timeout=30000;")
+                row = conn.execute(
+                    "SELECT storage, full_ref, rel_ref, day, owner_key_id FROM artifact_index WHERE kind=? AND artifact_id=?",
+                    (kind, artifact_id),
+                ).fetchone()
+            finally:
+                conn.close()
+        if not row:
+            return None
+        storage, full_ref, rel_ref, day, owner_key_id = row
+        return {
+            "storage": str(storage or ""),
+            "full_ref": str(full_ref or ""),
+            "rel_ref": str(rel_ref or ""),
+            "day": str(day or ""),
+            "owner_key_id": str(owner_key_id or ""),
+        }
+    except Exception as e:
+        _log_event(logging.WARNING, "artifact_index_get_failed", kind=kind, artifact_id=artifact_id, error=str(e))
+        return None
+
+
+def _artifact_index_delete(*, kind: str, artifact_id: str) -> None:
+    if not _artifact_index_enabled():
+        return
+    try:
+        with _ARTIFACT_INDEX_LOCK:
+            conn = sqlite3.connect(str(ARTIFACT_INDEX_DB_PATH), timeout=30.0)
+            try:
+                conn.execute("PRAGMA busy_timeout=30000;")
+                conn.execute("DELETE FROM artifact_index WHERE kind=? AND artifact_id=?", (kind, artifact_id))
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception as e:
+        _log_event(logging.WARNING, "artifact_index_delete_failed", kind=kind, artifact_id=artifact_id, error=str(e))
+
+
+def _owner_key_id_from_payload(payload: Dict[str, Any]) -> Optional[str]:
+    try:
+        k = (payload or {}).get("auth", {}).get("key_id")
+        return str(k) if k else None
+    except Exception:
+        return None
+
 def _ensure_batch_artifacts_dir() -> Path:
     # Local filesystem mode only.
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -732,11 +898,37 @@ def _save_batch_artifact(run_id: str, payload: Dict[str, Any]) -> str:
             _s3_put_json(key, payload)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to write batch artifact to S3: {e}")
+
+        try:
+            _artifact_index_upsert(
+                kind="batch",
+                artifact_id=run_id,
+                full_ref=key,
+                rel_ref=_to_artifact_rel(key),
+                day=day,
+                owner_key_id=_owner_key_id_from_payload(payload),
+            )
+        except Exception:
+            pass
+
         return key
 
     out_dir = _ensure_batch_artifacts_dir()
     path = out_dir / f"{run_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    try:
+        _artifact_index_upsert(
+            kind="batch",
+            artifact_id=run_id,
+            full_ref=str(path),
+            rel_ref=_to_artifact_rel(path),
+            day=day,
+            owner_key_id=_owner_key_id_from_payload(payload),
+        )
+    except Exception:
+        pass
+
     return str(path)
 
 
@@ -1281,16 +1473,55 @@ def _find_artifact_path(request_id: str, *, date: Optional[str] = None, max_days
         p = Path(ref)
         return p if p.exists() else None
 
+    # Fast path: SQLite index lookup (best-effort).
+    rec = _artifact_index_get(kind="extract", artifact_id=request_id)
+    if rec:
+        full_ref = rec.get("full_ref") or ""
+        storage = (rec.get("storage") or "").lower()
+        if storage == "s3" and _s3_enabled() and full_ref:
+            if _s3_exists(full_ref):
+                return full_ref
+            _artifact_index_delete(kind="extract", artifact_id=request_id)
+        elif storage == "local" and full_ref:
+            p = Path(full_ref)
+            if p.exists():
+                return p
+            _artifact_index_delete(kind="extract", artifact_id=request_id)
+
+    # Fallback: scan recent days.
     days = _iter_artifact_days_desc()[: max(1, int(max_days))]
     for d in days:
         ref = _extract_artifact_ref(request_id, day=d)
         if _s3_enabled():
             if _s3_exists(str(ref)):
+                try:
+                    _artifact_index_upsert(
+                        kind="extract",
+                        artifact_id=request_id,
+                        full_ref=str(ref),
+                        rel_ref=_to_artifact_rel(str(ref)),
+                        day=d,
+                        owner_key_id=None,
+                    )
+                except Exception:
+                    pass
                 return str(ref)
         else:
             p = Path(ref)
             if p.exists():
+                try:
+                    _artifact_index_upsert(
+                        kind="extract",
+                        artifact_id=request_id,
+                        full_ref=str(p),
+                        rel_ref=_to_artifact_rel(p),
+                        day=d,
+                        owner_key_id=None,
+                    )
+                except Exception:
+                    pass
                 return p
+
     return None
 
 
@@ -1356,16 +1587,55 @@ def _find_batch_artifact_path(run_id: str, *, date: Optional[str] = None, max_da
         p = Path(ref)
         return p if p.exists() else None
 
+    # Fast path: SQLite index lookup (best-effort).
+    rec = _artifact_index_get(kind="batch", artifact_id=run_id)
+    if rec:
+        full_ref = rec.get("full_ref") or ""
+        storage = (rec.get("storage") or "").lower()
+        if storage == "s3" and _s3_enabled() and full_ref:
+            if _s3_exists(full_ref):
+                return full_ref
+            _artifact_index_delete(kind="batch", artifact_id=run_id)
+        elif storage == "local" and full_ref:
+            p = Path(full_ref)
+            if p.exists():
+                return p
+            _artifact_index_delete(kind="batch", artifact_id=run_id)
+
+    # Fallback: scan recent days.
     days = _iter_batch_days_desc()[: max(1, int(max_days))]
     for d in days:
         ref = _batch_artifact_ref(run_id, day=d)
         if _s3_enabled():
             if _s3_exists(str(ref)):
+                try:
+                    _artifact_index_upsert(
+                        kind="batch",
+                        artifact_id=run_id,
+                        full_ref=str(ref),
+                        rel_ref=_to_artifact_rel(str(ref)),
+                        day=d,
+                        owner_key_id=None,
+                    )
+                except Exception:
+                    pass
                 return str(ref)
         else:
             p = Path(ref)
             if p.exists():
+                try:
+                    _artifact_index_upsert(
+                        kind="batch",
+                        artifact_id=run_id,
+                        full_ref=str(p),
+                        rel_ref=_to_artifact_rel(p),
+                        day=d,
+                        owner_key_id=None,
+                    )
+                except Exception:
+                    pass
                 return p
+
     return None
 
 

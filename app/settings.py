@@ -4,7 +4,7 @@ from pydantic import Field, AliasChoices, field_validator
 class Settings(BaseSettings):
     # --- Auth ---
     AUTH_ENABLED: bool = True
-    AUTH_DB_PATH: str = "/data/auth/auth.db"
+    AUTH_DB_PATH: str = "/data/db/auth.db"
     API_KEY_PEPPER: str
 
     # --- Debug / local dev ---
@@ -22,6 +22,8 @@ class Settings(BaseSettings):
 
     # --- App ---
     ARTIFACTS_DIR: str = "/data/artifacts"
+    ARTIFACT_INDEX_DB_PATH: str ="/data/db/artifacts.db"
+
     VLLM_MODEL: str = "Qwen/Qwen3-VL-8B-Instruct"
     # --- Logging ---
     # Defaults are suitable for Docker (stdout) + log collectors (Loki/ELK).
