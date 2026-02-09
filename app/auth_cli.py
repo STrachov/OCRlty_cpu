@@ -1,13 +1,11 @@
 # app/auth_cli.py
 import argparse
 import json
-import os
 import sys
 from typing import List, Optional
 
+from app.settings import settings
 from app.auth import (
-    AUTH_DB_PATH,
-    API_KEY_PEPPER,
     ROLE_PRESET_SCOPES,
     create_api_key,
     init_auth_db,
@@ -43,12 +41,17 @@ def main() -> None:
         prog="auth-cli",
         description="Local CLI for managing API keys (SQLite).",
     )
-    p.add_argument("--db", default=AUTH_DB_PATH, help=f"Path to SQLite db (default: {AUTH_DB_PATH})")
+    p.add_argument(
+        "--db",
+        default=settings.AUTH_DB_PATH,
+        help=f"Path to SQLite db (default: {settings.AUTH_DB_PATH})",
+    )
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub_init = sub.add_parser("init-db", help="Create tables if needed")
     sub_init.set_defaults(func=lambda args: init_auth_db(args.db))
+
 
     sub_create = sub.add_parser("create-key", help="Create a new API key")
     sub_create.add_argument("--key-id", required=True, help="Human-readable key id (unique)")
@@ -56,12 +59,12 @@ def main() -> None:
     sub_create.add_argument(
         "--scopes",
         default=None,
-        help="Optional scopes override. CSV 'a,b,c' or JSON array '[\"a\",\"b\"]'. "
+        help="Optional scopes override. CSV 'a,b,c' or JSON array '[a,b]'. "
              "If omitted, role preset scopes are used.",
     )
 
     def _create(args):
-        if not API_KEY_PEPPER:
+        if not settings.API_KEY_PEPPER:
             _die("API_KEY_PEPPER is not set. Set env var before creating keys.", 2)
         scopes = _parse_scopes(args.scopes)
         raw_key, principal = create_api_key(
@@ -92,6 +95,7 @@ def main() -> None:
     sub_revoke.set_defaults(func=_revoke)
 
     sub_list = sub.add_parser("list-keys", help="List keys (no secrets)")
+
     def _list(args):
         rows = list_api_keys(db_path=args.db)
         if not rows:

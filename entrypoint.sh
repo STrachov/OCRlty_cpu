@@ -37,7 +37,7 @@ fi
 
 # vLLM (GPU endpoint)
 if [[ -z "${VLLM_BASE_URL:-}" ]]; then
-  echo "ERROR: VLLM_BASE_URL is required (e.g. https://POD_ID-8000.proxy.runpod.net/v1)" >&2
+  echo "ERROR: VLLM_BASE_URL is required (e.g. https://POD_ID-8000.proxy.runpod.net)" >&2
   exit 1
 fi
 if [[ -z "${VLLM_API_KEY:-}" ]]; then

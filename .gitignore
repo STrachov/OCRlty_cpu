@@ -43,3 +43,4 @@ hf_home/
 # === Local db and files ===
 docs/
 notebooks/
+tmp/

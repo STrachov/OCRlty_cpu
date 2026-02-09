@@ -23,14 +23,15 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union, List
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple, Union, List, Callable, Awaitable
 from collections import defaultdict
 
 import boto3
 import botocore
 from botocore.config import Config as BotoConfig
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, File, UploadFile, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from jsonschema import Draft202012Validator
@@ -39,6 +40,9 @@ from jsonschema.exceptions import SchemaError
 from app.auth import ApiPrincipal, init_auth_db, require_scopes
 from app.settings import settings
 from app.vllm_client import VLLMClient
+
+from dotenv import load_dotenv  
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=False)
 
 APP_ROOT = Path(__file__).resolve().parent
 SCHEMAS_DIR = APP_ROOT / "schemas"
@@ -2822,43 +2826,151 @@ async def extract(
     )
 
 
-# --- Batch extract (server-side folder) ---
+# ---------------------------
+# Batch runner core (shared by different input sources)
+# ---------------------------
 
-@app.post("/v1/batch_extract", response_model=BatchExtractResponse)
-async def batch_extract(
-    req: BatchExtractRequest,
-    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
-) -> BatchExtractResponse:
-    # Validate task files early.
-    task = _get_task(req.task_id)
+@dataclass
+class _BatchInput:
+    image_ref: str
+    request_id: str
+    mime_type: str
+    load_bytes: Callable[[], Awaitable[bytes]]
 
-    run_id = (req.run_id or _default_run_id()).strip()
-    _validate_request_id_for_fs(run_id)
+    # Optional persistence metadata (used by upload/rerun flows)
+    orig_name: Optional[str] = None
+    sha256: Optional[str] = None
+    input_rel: Optional[str] = None
+    input_existed: Optional[bool] = None
+    bytes_len: Optional[int] = None
 
-    images_dir = _validate_under_data_root(Path(req.images_dir).expanduser())
-    files = _list_image_files(images_dir, req.glob, req.exts, req.limit)
 
+def _sanitize_ext_from_name(filename: str, mime_type: str) -> str:
+    fn = (filename or "").strip()
+    ext = Path(fn).suffix.lower()
+    if ext and re.fullmatch(r"\.[a-z0-9]{1,8}", ext or ""):
+        return ext
+    mt = (mime_type or "").split(";", 1)[0].strip().lower()
+    guessed = mimetypes.guess_extension(mt) if mt else None
+    if guessed and re.fullmatch(r"\.[a-z0-9]{1,8}", guessed):
+        return guessed
+    return ".bin"
+
+
+def _inputs_rel_for_hash(key_id: str, sha256_hex: str, *, filename: str, mime_type: str) -> str:
+    ext = _sanitize_ext_from_name(filename, mime_type)
+    kid = re.sub(r"[^A-Za-z0-9_.-]+", "_", (key_id or "anon"))[:64] or "anon"
+    return f"inputs/{kid}/sha256/{sha256_hex}{ext}"
+
+
+def _s3_put_bytes_cas(*, key: str, data: bytes, content_type: str) -> bool:
+    """Put bytes with If-None-Match semantics. Returns True if object already existed."""
+    body = data or b""
+
+    def _do():
+        kwargs: Dict[str, Any] = {
+            "Bucket": _S3_BUCKET,
+            "Key": key,
+            "Body": body,
+            "ContentType": content_type or "application/octet-stream",
+            "CacheControl": "no-store",
+            # CAS semantics (used already in _s3_put_json in this repo).
+            "IfNoneMatch": "*",
+        }
+        return _s3_client().put_object(**kwargs)
+
+    try:
+        _s3_call_with_retries(_do, op="put_object")
+        return False
+    except botocore.exceptions.ClientError as e:
+        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
+        if code in {"PreconditionFailed"}:
+            return True
+        raise
+
+
+def _s3_get_bytes(key: str) -> bytes:
+    def _do():
+        return _s3_client().get_object(Bucket=_S3_BUCKET, Key=key)
+
+    try:
+        obj = _s3_call_with_retries(_do, op="get_object")
+    except botocore.exceptions.ClientError as e:
+        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
+        if code in {"NoSuchKey", "404"}:
+            raise HTTPException(status_code=404, detail="Input object not found.")
+        raise HTTPException(status_code=502, detail=f"S3 get_object failed: {code}")
+
+    return obj["Body"].read()
+
+
+def _persist_input_bytes(
+    principal: ApiPrincipal,
+    *,
+    data: bytes,
+    filename: str,
+    mime_type: str,
+) -> Tuple[str, str, bool]:
+    """Persist input bytes under a content-addressed key. Returns (sha256_hex, input_rel, existed)."""
+    sha = hashlib.sha256(data or b"").hexdigest()
+    rel = _inputs_rel_for_hash(principal.key_id, sha, filename=filename, mime_type=mime_type)
+
+    if _s3_enabled():
+        key = _s3_key(rel)
+        existed = _s3_put_bytes_cas(key=key, data=data, content_type=mime_type)
+        return sha, rel, existed
+
+    # Local mode: ARTIFACTS_DIR/inputs/<key_id>/sha256/<sha>.<ext>
+    path = (ARTIFACTS_DIR / rel).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return sha, rel, True
+    path.write_bytes(data)
+    return sha, rel, False
+
+
+async def _load_input_bytes_by_rel(input_rel: str) -> bytes:
+    if not input_rel:
+        raise HTTPException(status_code=400, detail="input_rel is empty.")
+
+    if _s3_enabled():
+        key = _s3_key(input_rel)
+        return await asyncio.to_thread(_s3_get_bytes, key)
+
+    path = (ARTIFACTS_DIR / input_rel).resolve()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Input file not found.")
+    return await asyncio.to_thread(path.read_bytes)
+
+
+async def _run_batch_extract_core(
+    *,
+    run_id: str,
+    task_id: str,
+    task: Dict[str, Any],
+    inputs: List[_BatchInput],
+    concurrency: int,
+    principal: ApiPrincipal,
+    source: Dict[str, Any],
+    batch_fields: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Shared batch runner: prepares ExtractRequest and calls /v1/extract for each prepared input."""
     t0 = time.perf_counter()
+    sem = asyncio.Semaphore(int(concurrency))
 
-    sem = asyncio.Semaphore(int(req.concurrency))
-    items: List[Dict[str, Any]] = []
-
-    async def _process_one(p: Path) -> Dict[str, Any]:
-        rel_path = str(p.relative_to(images_dir)).replace("\\", "/")
-        request_id = _make_batch_request_id(run_id, rel_path)
-
+    async def _process_one(inp: _BatchInput) -> Dict[str, Any]:
         async with sem:
+            request_id = inp.request_id
             try:
-                data = await asyncio.to_thread(p.read_bytes)
+                data = await inp.load_bytes()
                 b64 = base64.b64encode(data).decode("ascii")
-                mime = _guess_mime_type(p)
 
                 sub_req = ExtractRequest(
-                    task_id=req.task_id,
+                    task_id=task_id,
                     image_base64=b64,
-                    mime_type=mime,
+                    mime_type=inp.mime_type or "image/png",
                     request_id=request_id,
-                    image_ref=rel_path,
+                    image_ref=inp.image_ref,
                     debug=None,
                 )
 
@@ -2867,18 +2979,26 @@ async def batch_extract(
                     resp = await extract(sub_req, principal)
                 finally:
                     _reset_request_id(token_item)
-                artifact_rel = resp.artifact_rel
 
-                return {
-                    "image": rel_path,
+                item = {
+                    "image": inp.image_ref,
                     "request_id": resp.request_id,
-                    "artifact_rel": artifact_rel,
+                    "artifact_rel": resp.artifact_rel,
                     "ok": True,
                     "schema_ok": resp.schema_ok,
                     "timings_ms": resp.timings_ms,
                     "image_resize": resp.image_resize,
                     "error_history": resp.error_history,
                 }
+                if inp.sha256:
+                    item["sha256"] = inp.sha256
+                if inp.input_rel:
+                    item["input_rel"] = inp.input_rel
+                if inp.input_existed is not None:
+                    item["input_existed"] = bool(inp.input_existed)
+                if inp.bytes_len is not None:
+                    item["bytes"] = int(inp.bytes_len)
+                return item
 
             except HTTPException as he:
                 art_p = _find_artifact_path(request_id, max_days=30)
@@ -2886,32 +3006,49 @@ async def batch_extract(
                 err_hist = _try_load_error_history_for_request(request_id) or [
                     _mk_err("http_error", f"HTTP {he.status_code}: {he.detail}")
                 ]
-                return {
-                    "image": rel_path,
+                item = {
+                    "image": inp.image_ref,
                     "request_id": request_id,
                     "artifact_rel": artifact_rel,
                     "ok": False,
                     "schema_ok": False,
                     "error_history": err_hist,
                 }
+                if inp.sha256:
+                    item["sha256"] = inp.sha256
+                if inp.input_rel:
+                    item["input_rel"] = inp.input_rel
+                if inp.input_existed is not None:
+                    item["input_existed"] = bool(inp.input_existed)
+                if inp.bytes_len is not None:
+                    item["bytes"] = int(inp.bytes_len)
+                return item
+
             except Exception as e:
                 art_p = _find_artifact_path(request_id, max_days=30)
                 artifact_rel = _to_artifact_rel(art_p) if art_p is not None else None
                 err_hist = _try_load_error_history_for_request(request_id) or [
                     _mk_err("exception", f"{e.__class__.__name__}: {e}")
                 ]
-                return {
-                    "image": rel_path,
+                item = {
+                    "image": inp.image_ref,
                     "request_id": request_id,
                     "artifact_rel": artifact_rel,
                     "ok": False,
                     "schema_ok": False,
                     "error_history": err_hist,
                 }
+                if inp.sha256:
+                    item["sha256"] = inp.sha256
+                if inp.input_rel:
+                    item["input_rel"] = inp.input_rel
+                if inp.input_existed is not None:
+                    item["input_existed"] = bool(inp.input_existed)
+                if inp.bytes_len is not None:
+                    item["bytes"] = int(inp.bytes_len)
+                return item
 
-    # Run
-    results = await asyncio.gather(*[_process_one(p) for p in files])
-    items.extend(results)
+    items = list(await asyncio.gather(*[_process_one(i) for i in inputs]))
 
     total = len(items)
     ok = sum(1 for it in items if it.get("ok"))
@@ -2920,61 +3057,342 @@ async def batch_extract(
     schema_failed = sum(1 for it in items if it.get("ok") and (not it.get("schema_ok")))
 
     t1 = time.perf_counter()
-    
+
     prompt_sha256 = hashlib.sha256(task["prompt_value"].encode("utf-8")).hexdigest()
-    schema_obj = task["schema_value"]  
+    schema_obj = task["schema_value"]
     schema_canon = json.dumps(schema_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     schema_sha256 = hashlib.sha256(schema_canon.encode("utf-8")).hexdigest()
 
-    batch_artifact_path = _save_batch_artifact(
-        run_id,
-        {
-            "run_id": run_id,
-            "task_id": req.task_id,
+    inputs_index: List[Dict[str, Any]] = []
+    for inp in inputs:
+        if inp.sha256 or inp.input_rel:
+            inputs_index.append(
+                {
+                    "image_ref": inp.image_ref,
+                    "orig_name": inp.orig_name or inp.image_ref,
+                    "sha256": inp.sha256,
+                    "input_rel": inp.input_rel,
+                    "input_existed": inp.input_existed,
+                    "bytes": inp.bytes_len,
+                    "mime_type": inp.mime_type,
+                }
+            )
+
+    batch_payload: Dict[str, Any] = {
+        "run_id": run_id,
+        "task_id": task_id,
+        "source": source,
+        "task_snapshot": {
+            "prompt_text": task["prompt_value"],
+            "schema_json": task["schema_value"],
+            "prompt_sha256": prompt_sha256,
+            "schema_sha256": schema_sha256,
+        },
+        "concurrency": int(concurrency),
+        "model": MODEL_ID,
+        "inference_backend": settings.INFERENCE_BACKEND.strip().lower(),
+        "auth": {"key_id": principal.key_id, "role": principal.role},
+        "summary": {
+            "total": total,
+            "ok": ok,
+            "failed": failed,
+            "schema_ok": schema_ok,
+            "schema_failed": schema_failed,
+        },
+        "timings_ms": {
+            "total_ms": (t1 - t0) * 1000.0,
+        },
+        "items": items,
+    }
+
+    if batch_fields:
+        batch_payload.update(batch_fields)
+
+    if inputs_index:
+        batch_payload["inputs_index"] = inputs_index
+
+    batch_artifact_path = _save_batch_artifact(run_id, batch_payload)
+
+    return {
+        "run_id": run_id,
+        "batch_artifact_path": batch_artifact_path,
+        "items": items,
+        "summary": batch_payload["summary"],
+        "timings_ms": batch_payload["timings_ms"],
+    }
+
+
+class BatchRunResponse(BaseModel):
+    run_id: str
+    task_id: str
+
+    total: int
+    ok: int
+    failed: int
+    schema_ok: int
+    schema_failed: int
+
+    timings_ms: Dict[str, float]
+    batch_artifact_path: str
+
+
+class BatchRerunRequest(BaseModel):
+    source_run_id: str = Field(..., description="Existing batch run_id to rerun.")
+    source_batch_date: Optional[str] = Field(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days.")
+    max_days: int = Field(default=90, ge=1, le=365, description="How many recent days to search if source_batch_date is not provided.")
+
+    task_id: str = Field(default="receipt_fields_v1", description="Task to run for the rerun.")
+    concurrency: int = Field(default=4, ge=1, le=32)
+    run_id: Optional[str] = Field(default=None, description="Optional new run_id (if omitted, generated).")
+
+
+# --- Batch extract (upload from client) ---
+
+@app.post("/v1/batch_extract_upload", response_model=BatchRunResponse)
+async def batch_extract_upload(
+    task_id: str = Form(...),
+    persist_inputs: bool = Form(False),
+    concurrency: int = Form(4),
+    run_id: Optional[str] = Form(None),
+    files: List[UploadFile] = File(...),
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+) -> BatchRunResponse:
+    task = _get_task(task_id)
+
+    run_id2 = (run_id or _default_run_id()).strip()
+    _validate_request_id_for_fs(run_id2)
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+
+    inputs: List[_BatchInput] = []
+    max_files = int(os.getenv("BATCH_UPLOAD_MAX_FILES", "500"))
+    if len(files) > max_files:
+        raise HTTPException(status_code=400, detail=f"Too many files (>{max_files}).")
+
+    for idx, uf in enumerate(files):
+        name = (uf.filename or f"file_{idx}").strip() or f"file_{idx}"
+        data = await uf.read()
+        mt = (uf.content_type or mimetypes.guess_type(name)[0] or "image/png").strip()
+
+        sha: Optional[str] = None
+        input_rel: Optional[str] = None
+        existed: Optional[bool] = None
+
+        if persist_inputs:
+            sha, input_rel, existed = _persist_input_bytes(principal, data=data, filename=name, mime_type=mt)
+
+        req_id = _make_batch_request_id(run_id2, name)
+
+        async def _lb(d=data) -> bytes:
+            return d
+
+        inputs.append(
+            _BatchInput(
+                image_ref=name,
+                request_id=req_id,
+                mime_type=mt,
+                load_bytes=_lb,
+                orig_name=name,
+                sha256=sha,
+                input_rel=input_rel,
+                input_existed=existed,
+                bytes_len=len(data) if data is not None else None,
+            )
+        )
+
+    res = await _run_batch_extract_core(
+        run_id=run_id2,
+        task_id=task_id,
+        task=task,
+        inputs=inputs,
+        concurrency=concurrency,
+        principal=principal,
+        source={
+            "type": "upload",
+            "persist_inputs": bool(persist_inputs),
+            "count": len(inputs),
+        },
+        batch_fields={
+            "persist_inputs": bool(persist_inputs),
+            "upload_count": len(inputs),
+        },
+    )
+
+    summ = res["summary"]
+    return BatchRunResponse(
+        run_id=run_id2,
+        task_id=task_id,
+        total=int(summ["total"]),
+        ok=int(summ["ok"]),
+        failed=int(summ["failed"]),
+        schema_ok=int(summ["schema_ok"]),
+        schema_failed=int(summ["schema_failed"]),
+        timings_ms=res["timings_ms"],
+        batch_artifact_path=str(res["batch_artifact_path"]),
+    )
+
+
+# --- Batch rerun (from persisted inputs in previous batch artifact) ---
+
+@app.post("/v1/batch_rerun", response_model=BatchRunResponse)
+async def batch_rerun(
+    req: BatchRerunRequest,
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+) -> BatchRunResponse:
+    task = _get_task(req.task_id)
+
+    src_path = _find_batch_artifact_path(req.source_run_id, date=req.source_batch_date, max_days=req.max_days)
+    if src_path is None:
+        raise HTTPException(status_code=404, detail="Source batch artifact not found.")
+
+    src_obj = _read_json_file(src_path)
+    if not isinstance(src_obj, dict):
+        raise HTTPException(status_code=500, detail="Invalid source batch artifact JSON (expected object).")
+
+    src_auth = src_obj.get("auth") if isinstance(src_obj.get("auth"), dict) else {}
+    src_key_id = str(src_auth.get("key_id") or "")
+    if settings.AUTH_ENABLED and principal.role != "admin":
+        if not src_key_id or src_key_id != principal.key_id:
+            raise HTTPException(status_code=403, detail="You may only rerun your own batches.")
+
+    inputs_index = src_obj.get("inputs_index")
+    if not isinstance(inputs_index, list) or not inputs_index:
+        raise HTTPException(
+            status_code=400,
+            detail="Source batch has no persisted inputs (inputs_index missing/empty). Re-run is not possible.",
+        )
+
+    run_id2 = (req.run_id or _default_run_id()).strip()
+    _validate_request_id_for_fs(run_id2)
+
+    inputs: List[_BatchInput] = []
+    for idx, ix in enumerate(inputs_index):
+        if not isinstance(ix, dict):
+            continue
+        input_rel = str(ix.get("input_rel") or "")
+        if not input_rel:
+            continue
+
+        orig_name = str(ix.get("orig_name") or ix.get("image_ref") or f"file_{idx}")
+        mt = str(ix.get("mime_type") or mimetypes.guess_type(orig_name)[0] or "image/png")
+        sha = str(ix.get("sha256") or "") or None
+
+        req_id = _make_batch_request_id(run_id2, orig_name)
+
+        async def _lb(rel=input_rel) -> bytes:
+            return await _load_input_bytes_by_rel(rel)
+
+        inputs.append(
+            _BatchInput(
+                image_ref=orig_name,
+                request_id=req_id,
+                mime_type=mt,
+                load_bytes=_lb,
+                orig_name=orig_name,
+                sha256=sha,
+                input_rel=input_rel,
+                input_existed=True,
+                bytes_len=int(ix.get("bytes")) if isinstance(ix.get("bytes"), int) else None,
+            )
+        )
+
+    if not inputs:
+        raise HTTPException(status_code=400, detail="No usable persisted inputs found in inputs_index.")
+
+    res = await _run_batch_extract_core(
+        run_id=run_id2,
+        task_id=req.task_id,
+        task=task,
+        inputs=inputs,
+        concurrency=req.concurrency,
+        principal=principal,
+        source={
+            "type": "rerun",
+            "source_run_id": req.source_run_id,
+            "source_batch_date": _artifact_date_from_path(src_path),
+            "source_batch_artifact": _to_artifact_rel(src_path) if src_path is not None else None,
+        },
+        batch_fields={
+            "source_run_id": req.source_run_id,
+            "source_batch_date": _artifact_date_from_path(src_path),
+        },
+    )
+
+    summ = res["summary"]
+    return BatchRunResponse(
+        run_id=run_id2,
+        task_id=req.task_id,
+        total=int(summ["total"]),
+        ok=int(summ["ok"]),
+        failed=int(summ["failed"]),
+        schema_ok=int(summ["schema_ok"]),
+        schema_failed=int(summ["schema_failed"]),
+        timings_ms=res["timings_ms"],
+        batch_artifact_path=str(res["batch_artifact_path"]),
+    )
+
+
+# --- Batch extract (server-side folder) ---
+
+@app.post("/v1/batch_extract", response_model=BatchExtractResponse)
+async def batch_extract(
+    req: BatchExtractRequest,
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+) -> BatchExtractResponse:
+    task = _get_task(req.task_id)
+
+    run_id = (req.run_id or _default_run_id()).strip()
+    _validate_request_id_for_fs(run_id)
+
+    images_dir = _validate_under_data_root(Path(req.images_dir).expanduser())
+    files = _list_image_files(images_dir, req.glob, req.exts, req.limit)
+
+    inputs: List[_BatchInput] = []
+    for p in files:
+        rel_path = str(p.relative_to(images_dir)).replace("\\", "/")
+        request_id = _make_batch_request_id(run_id, rel_path)
+        mime = _guess_mime_type(p)
+
+        async def _lb(pp=p) -> bytes:
+            return await asyncio.to_thread(pp.read_bytes)
+
+        inputs.append(_BatchInput(image_ref=rel_path, request_id=request_id, mime_type=mime, load_bytes=_lb))
+
+    res = await _run_batch_extract_core(
+        run_id=run_id,
+        task_id=req.task_id,
+        task=task,
+        inputs=inputs,
+        concurrency=req.concurrency,
+        principal=principal,
+        source={
+            "type": "server_dir",
             "images_dir": str(images_dir),
             "glob": req.glob,
             "exts": req.exts,
             "limit": req.limit,
-            "task_snapshot": {
-                "prompt_text": task["prompt_value"],
-                "schema_json": task["schema_value"],
-                "prompt_sha256": prompt_sha256,
-                "schema_sha256": schema_sha256,
-            },
-            "concurrency": req.concurrency,
-            "model": MODEL_ID,
-            "inference_backend": settings.INFERENCE_BACKEND.strip().lower(),
-            "auth": {"key_id": principal.key_id, "role": principal.role},
-            "summary": {
-                "total": total,
-                "ok": ok,
-                "failed": failed,
-                "schema_ok": schema_ok,
-                "schema_failed": schema_failed,
-            },
-            "timings_ms": {
-                "total_ms": (t1 - t0) * 1000.0,
-            },
-            "items": items,
+        },
+        batch_fields={
+            "images_dir": str(images_dir),
+            "glob": req.glob,
+            "exts": req.exts,
+            "limit": req.limit,
         },
     )
+
     # --- AUTO-EVAL (optional) ---
     eval_obj: Optional[Dict[str, Any]] = None
-    eval_artifact_path: Optional[str] = None
     if req.gt_path:
-        # Evaluating against a server-side GT file is considered a DEBUG operation.
-        # Eval uses the same permissions as the debug eval endpoint: DEBUG_MODE=1 and scope debug:read_raw.
         _debug_enabled()
         if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
             raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
 
-        # Validate GT path early for a clearer error.
         _validate_under_any_root(Path(req.gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
 
-        # Reuse the same evaluation logic as the eval_batch_vs_gt endpoint.
         eval_req = EvalBatchVsGTRequest(
             run_id=run_id,
-            batch_date=Path(batch_artifact_path).parent.name,
+            batch_date=Path(str(res["batch_artifact_path"])).parent.name,
             gt_path=req.gt_path,
             gt_image_key=req.gt_image_key or "image",
             include_worst=False,
@@ -2983,18 +3401,17 @@ async def batch_extract(
         eval_resp = await eval_batch_vs_gt(eval_req)
         eval_obj = eval_resp.model_dump()
 
-
-
+    summ = res["summary"]
     return BatchExtractResponse(
         run_id=run_id,
         task_id=req.task_id,
         images_dir=str(images_dir),
-        total=total,
-        ok=ok,
-        failed=failed,
-        schema_ok=schema_ok,
-        schema_failed=schema_failed,
-        timings_ms={"total_ms": (t1 - t0) * 1000.0},
-        batch_artifact_path=batch_artifact_path,
+        total=int(summ["total"]),
+        ok=int(summ["ok"]),
+        failed=int(summ["failed"]),
+        schema_ok=int(summ["schema_ok"]),
+        schema_failed=int(summ["schema_failed"]),
+        timings_ms=res["timings_ms"],
+        batch_artifact_path=str(res["batch_artifact_path"]),
         eval=eval_obj,
     )
