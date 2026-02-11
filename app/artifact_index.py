@@ -21,9 +21,10 @@ class ArtifactIndex:
         *,
         enabled: bool,
         db_path: Path,
-        log_event: Callable[[int, str], None],
+        log_event: Callable[..., None],
         is_s3_enabled: Callable[[], bool] | None = None,
     ) -> None:
+        self._initialized = False
         self._enabled = bool(enabled)
         self._db_path = Path(db_path)
         self._log_event = log_event
@@ -32,6 +33,12 @@ class ArtifactIndex:
 
     def enabled(self) -> bool:
         return bool(self._enabled)
+    
+    def _ensure_init(self) -> None:
+        if self._initialized:
+            return
+        self.init()
+        self._initialized = True
 
     @property
     def db_path(self) -> Path:
@@ -96,6 +103,7 @@ class ArtifactIndex:
         if not self.enabled():
             return
         try:
+            self._ensure_init()
             created_at = datetime.now(timezone.utc).isoformat()
             # In S3 mode we store keys (no leading "/"). In local mode we store absolute paths.
             storage = "s3" if (self._is_s3_enabled() and full_ref and not str(full_ref).startswith("/")) else "local"
@@ -136,6 +144,7 @@ class ArtifactIndex:
         if not self.enabled():
             return None
         try:
+            self._ensure_init()
             with self._lock:
                 conn = sqlite3.connect(str(self._db_path), timeout=30.0)
                 try:
@@ -174,6 +183,7 @@ class ArtifactIndex:
         if not self.enabled():
             return
         try:
+            self._ensure_init()
             with self._lock:
                 conn = sqlite3.connect(str(self._db_path), timeout=30.0)
                 try:

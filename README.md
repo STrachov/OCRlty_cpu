@@ -171,7 +171,128 @@ pip-compile requirements.in -o requirements.txt
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
+### Smoke test (PowerShell)
+```powershell
+# ====== CONFIG ======
+$BASE   = "http://127.0.0.1:8080"         # или https://<runpod|vps-host>
+$APIKEY = "oAJcMSdufcInKdy9PRb-sb-5H-vDquybRQSpym3fZg4"     # admin key из auth_cli create-key (api_key)
+$AUTH   = "Authorization: Bearer $APIKEY"
 
+# Чтобы видеть статус-код в конце:
+$CURL_W = "`nHTTP %{http_code}`n"
+
+# ====== 0) HEALTH ======
+curl.exe -sS -w $CURL_W "$BASE/health"
+
+# ====== 1) /v1/me (проверка auth) ======
+curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/me"
+
+# ====== 2) /v1/extract (из локального файла -> base64) ======
+$IMG = ".\data\batch_smoke\images\cord_0000.jpg"   # если файл рядом с проектом
+$IMG_B64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($IMG))
+
+$RID = "smoke_" + [guid]::NewGuid().ToString("N")
+
+$body = @{
+  task_id      = "receipt_fields_v1"
+  image_base64 = $IMG_B64
+  mime_type    = "image/jpeg"
+  request_id   = $RID
+} | ConvertTo-Json -Depth 6
+
+New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
+$bodyFile = ".\tmp\extract_body.json"
+Set-Content -Path $bodyFile -Value $body -Encoding UTF8
+
+curl.exe -sS -X POST "$BASE/v1/extract" `
+  -H $AUTH `
+  -H "Content-Type: application/json" `
+  -H "X-Request-ID: $RID" `
+  --data-binary "@$bodyFile"
+
+
+# ====== 3) /v1/batch_extract_upload (multipart) ======
+# (надёжнее, чем server-side batch_extract: не требует датасета на сервере)
+$RUN_ID = "smoke_" + (Get-Date -Format "yyyyMMddTHHmmss")
+
+curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
+  -H $AUTH `
+  -F "task_id=receipt_fields_v1" `
+  -F "persist_inputs=false" `
+  -F "concurrency=2" `
+  -F "run_id=$RUN_ID" `
+  -F "files=@$IMG;type=image/png"
+
+# Если хочешь 2 файла:
+# $IMG2 = ".\receipt2.jpg"
+# curl.exe ... -F "files=@$IMG;type=image/png" -F "files=@$IMG2;type=image/jpeg"
+
+# ====== 4) /v1/batch_extract_rerun (после upload) ======
+# ВНИМАНИЕ: из-за использования pydantic.Field в сигнатуре, у тебя может быть так,
+# что FastAPI ожидает параметры как query, а не как JSON-body.
+# Поэтому даю 2 варианта: сначала пробуй JSON, если 422 — используй query.
+
+# 4a) Попытка JSON-body:
+$body_rerun = @{
+  source_run_id = "smoke_20260211T170102"
+  task_id       = "receipt_fields_v1"
+  concurrency   = 2
+} | ConvertTo-Json -Depth 6
+New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
+$bodyFile = ".\tmp\extract_body2.json"
+Set-Content -Path $bodyFile -Value $body_rerun -Encoding UTF8
+curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_rerun" `
+  -H $AUTH `
+  -H "Content-Type: application/json" `
+  --data-raw $body_rerun
+curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_rerun" `
+  -H $AUTH `
+  -F "concurrency=2" `
+  -F "source_run_id=$RUN_ID" 
+
+# 4b) Вариант query (если 4a вернул 422):
+curl.exe -sS -w $CURL_W -X POST `
+  -H $AUTH `
+  "$BASE/v1/batch_extract_rerun?source_run_id=$RUN_ID&task_id=receipt_fields_v1&concurrency=2"
+
+# ====== 5) /v1/batch_extract (server-side dir) ======
+# Этот эндпоинт требует, чтобы images_dir был ПОД data root на сервере.
+# Аналогично: сначала пробуй JSON, если 422 — query.
+
+# 5a) JSON-body (может не сработать из-за Field):
+$body_batch = @{
+  task_id      = "receipt_fields_v1"
+  images_dir   = "/workspace/src/data"   # поменяй под свою структуру на сервере
+  limit        = 2
+  concurrency  = 2
+  run_id       = ("smoke_dir_" + (Get-Date -Format "yyyyMMddTHHmmss"))
+} | ConvertTo-Json -Depth 6
+
+curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract" `
+  -H $AUTH `
+  -H "Content-Type: application/json" `
+  --data-raw $body_batch
+
+# 5b) Query-вариант (если 5a = 422):
+# (без glob/exts — пусть будут дефолты)
+curl.exe -sS -w $CURL_W -X POST `
+  -H $AUTH `
+  "$BASE/v1/batch_extract?task_id=receipt_fields_v1&images_dir=/workspace/src/data&limit=2&concurrency=2&run_id=smoke_dir_$(Get-Date -Format yyyyMMddTHHmmss)"
+
+# ====== 6) DEBUG эндпоинты (только если DEBUG_MODE=1 и ключ со scope debug:read_raw / debug:run) ======
+# Список артефактов:
+curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/debug/artifacts?limit=5"
+
+# Прочитать артефакт по request_id от extract ($RID):
+curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/debug/artifacts/$RID"
+
+# RAW:
+curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/debug/artifacts/$RID/raw"
+
+# Скачать backup tar.gz:
+curl.exe -sS -w $CURL_W -H $AUTH -o artifacts_backup.tar.gz "$BASE/v1/debug/artifacts/backup.tar.gz"
+
+```
 ---
 
 ## Деплой на VPS (Docker)

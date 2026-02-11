@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     #   S3_REGION=auto
     #
     # Credentials: boto3 will read AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from env.
-    S3_BUCKET: str = "ocrlty"
-    S3_ENDPOINT_URL: str | None = "https://38e42d66aea00f4e35692f08923b2e6b.r2.cloudflarestorage.com"
+    S3_BUCKET: str = ""
+    S3_ENDPOINT_URL: str | None = None
     S3_REGION: str = "auto"
     # Support both S3_PREFIX and legacy S3_ARTIFACTS_PREFIX env var names.
     S3_PREFIX: str = Field(default="prod", validation_alias=AliasChoices("S3_PREFIX", "S3_ARTIFACTS_PREFIX"))

@@ -10,7 +10,7 @@ from app.settings import settings
 from app.routers.core import router as core_router
 from app.routers.extract import router as extract_router
 from app.routers.debug import router as debug_router
-from app.handlers import make_request_id, REQUEST_ID_CTX, setup_logging
+from app.handlers import make_request_id, REQUEST_ID_CTX, setup_logging, load_tasks
 from app.services.artifacts import artifact_index_init
 
 
@@ -34,6 +34,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger("ocrlty").exception("artifact_index_init_failed")
 
+    # Load tasks
+    try:
+        load_tasks()
+    except Exception:
+        logging.getLogger("ocrlty").exception("tasks_load_failed")
+    
     yield
 
 

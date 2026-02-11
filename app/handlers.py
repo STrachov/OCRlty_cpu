@@ -44,10 +44,8 @@ S3_BUCKET = settings.S3_BUCKET or ""
 from app.services.s3_service import (
     s3_enabled,
     s3_key,
-    s3_get_text,
-    s3_list_common_prefixes,
-    s3_client,   
-    s3_call_with_retries
+    s3_get_bytes,
+    s3_put_bytes,
 )
 # Artifact helpers moved to app.services.artifacts (legacy names preserved)
 ARTIFACTS_DIR=Path(settings.ARTIFACTS_DIR).resolve()
@@ -66,6 +64,9 @@ from app.services.artifacts import (
 
 from dotenv import load_dotenv  
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=False)
+
+from app.vllm_client import VLLMClient
+vllm = VLLMClient()
 
 APP_ROOT = Path(__file__).resolve().parent
 SCHEMAS_DIR = APP_ROOT / "schemas"
@@ -237,7 +238,7 @@ def _load_task_or_error(task_id: str) -> None:
     }
 
 
-def _load_tasks() -> None:
+def load_tasks() -> None:
     _TASKS.clear()
     _TASK_LOAD_ERRORS.clear()
 
@@ -840,42 +841,6 @@ def _make_validator_or_raise(schema_dict: dict[str, Any], *, is_custom_schema: b
 # Artifacts 
 # ---------------------------
 
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _iter_batch_days_desc() -> List[str]:
-    if s3_enabled():
-        base = s3_key("batches/")
-        days: List[str] = []
-        for pfx in s3_list_common_prefixes(base):
-            m = re.search(r"/batches/(\d{4}-\d{2}-\d{2})/$", pfx)
-            if m:
-                days.append(m.group(1))
-        days.sort(reverse=True)
-        return days
-
-    base = ARTIFACTS_DIR / "batches"
-    if not base.exists():
-        return []
-    days: List[str] = []
-    for p in base.iterdir():
-        if p.is_dir() and DATE_RE.match(p.name):
-            days.append(p.name)
-    days.sort(reverse=True)
-    return days
-
-
-def read_json_file(p: Union[str, Path]) -> Any:
-    try:
-        if s3_enabled() and not isinstance(p, Path):
-            return json.loads(s3_get_text(str(p)))
-        return json.loads(Path(p).read_text(encoding="utf-8"))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read JSON file {str(p)!r}: {e}")
-
-
 def _validate_under_any_root(p: Path, roots: List[Path]) -> Path:
     pp = p.expanduser().resolve()
     for r in roots:
@@ -1473,32 +1438,6 @@ def _inputs_rel_for_hash(key_id: str, sha256_hex: str, *, filename: str, mime_ty
     return f"inputs/{kid}/sha256/{sha256_hex}{ext}"
 
 
-def _s3_put_bytes_cas(*, key: str, data: bytes, content_type: str) -> bool:
-    """Put bytes with If-None-Match semantics. Returns True if object already existed."""
-    body = data or b""
-
-    def _do():
-        kwargs: Dict[str, Any] = {
-            "Bucket": S3_BUCKET,
-            "Key": key,
-            "Body": body,
-            "ContentType": content_type or "application/octet-stream",
-            "CacheControl": "no-store",
-            # CAS semantics (used already in _s3_put_json in this repo).
-            "IfNoneMatch": "*",
-        }
-        return s3_client().put_object(**kwargs)
-
-    try:
-        s3_call_with_retries(_do, op="put_object")
-        return False
-    except botocore.exceptions.ClientError as e:
-        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
-        if code in {"PreconditionFailed"}:
-            return True
-        raise
-
-
 def _persist_input_bytes(
     principal: ApiPrincipal,
     *,
@@ -1512,7 +1451,7 @@ def _persist_input_bytes(
 
     if s3_enabled():
         key = s3_key(rel)
-        existed = _s3_put_bytes_cas(key=key, data=data, content_type=mime_type)
+        existed = s3_put_bytes(key=key, data=data, content_type=mime_type)
         return sha, rel, existed
 
     # Local mode: ARTIFACTS_DIR/inputs/<key_id>/sha256/<sha>.<ext>
@@ -1523,29 +1462,13 @@ def _persist_input_bytes(
     path.write_bytes(data)
     return sha, rel, False
 
-
-def _s3_get_bytes(key: str) -> bytes:
-    def _do():
-        return s3_client().get_object(Bucket=S3_BUCKET, Key=key)
-
-    try:
-        obj = s3_call_with_retries(_do, op="get_object")
-    except botocore.exceptions.ClientError as e:
-        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
-        if code in {"NoSuchKey", "404"}:
-            raise HTTPException(status_code=404, detail="Input object not found.")
-        raise HTTPException(status_code=502, detail=f"S3 get_object failed: {code}")
-
-    return obj["Body"].read()
-
-
 async def _load_input_bytes_by_rel(input_rel: str) -> bytes:
     if not input_rel:
         raise HTTPException(status_code=400, detail="input_rel is empty.")
 
     if s3_enabled():
         key = s3_key(input_rel)
-        return await asyncio.to_thread(_s3_get_bytes, key)
+        return await asyncio.to_thread(s3_get_bytes, key)
 
     path = (ARTIFACTS_DIR / input_rel).resolve()
     if not path.exists():
@@ -1584,10 +1507,6 @@ async def health() -> Dict[str, Any]:
 async def me(principal: ApiPrincipal = Depends(require_scopes([]))):
     return {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))}
 
-
-# --- p.2: debug artifact viewing ---
-
-# --- p.3b: debug evaluation (batch artifacts vs GT) ---
 
 class EvalBatchVsGTRequest(BaseModel):
     run_id: str = Field(..., description="Batch run_id to load from artifacts/batches/<day>/<run_id>.json")
@@ -1910,7 +1829,7 @@ async def eval_batch_vs_gt(
         "all_samples": sample_summaries,
     }
 
-    eval_artifact_path = save_eval_artifact(payload)
+    eval_artifact_path = await asyncio.to_thread(save_eval_artifact, payload)
 
     return EvalBatchVsGTResponse(
         eval_id=eval_id,
@@ -1920,9 +1839,6 @@ async def eval_batch_vs_gt(
         batch_artifact_path=str(batch_path),
         eval_artifact_path=eval_artifact_path,
     )
-
-
-# --- p.4: extract with task_id ---
 
 
 async def extract(
@@ -2066,7 +1982,7 @@ async def extract(
             
 
             # Inference failed (and retry either didn't happen or also failed).
-            artifact_path = save_artifact(
+            artifact_path = await asyncio.to_thread(save_artifact,
                 request_id,
                 {
                     **artifact_base,
@@ -2093,7 +2009,7 @@ async def extract(
     except Exception as e:
         error_history.append(_mk_err("unexpected_response_format", str(e)))
 
-        artifact_path = save_artifact(
+        artifact_path = await asyncio.to_thread(save_artifact,
             request_id,
             {
                 **artifact_base,
@@ -2118,7 +2034,7 @@ async def extract(
         error_history.append(_mk_err("parse_json", str(e)))
 
         # Сохраняем артефакт, иначе реально “некуда посмотреть”
-        artifact_path = save_artifact(
+        artifact_path = await asyncio.to_thread(save_artifact,
             request_id,
             {
                 **artifact_base,
@@ -2151,7 +2067,7 @@ async def extract(
         errors = [e.message for e in schema_json_validator.iter_errors(parsed)]
         schema_ok = len(errors) == 0
 
-    artifact_key = save_artifact(
+    artifact_key = await asyncio.to_thread(save_artifact,
         request_id,
         {
             **artifact_base,
@@ -2264,7 +2180,7 @@ async def _run_batch_extract_core(
             except HTTPException as he:
                 art_p = find_artifact_path(request_id, max_days=30)
                 artifact_rel = to_artifact_rel(art_p) if art_p is not None else None
-                err_hist = _try_load_error_history_for_request(request_id) or [
+                err_hist = await asyncio.to_thread(_try_load_error_history_for_request, request_id) or [
                     _mk_err("http_error", f"HTTP {he.status_code}: {he.detail}")
                 ]
                 item = {
@@ -2288,7 +2204,7 @@ async def _run_batch_extract_core(
             except Exception as e:
                 art_p = find_artifact_path(request_id, max_days=30)
                 artifact_rel = to_artifact_rel(art_p) if art_p is not None else None
-                err_hist = _try_load_error_history_for_request(request_id) or [
+                err_hist = await asyncio.to_thread(_try_load_error_history_for_request,request_id) or [
                     _mk_err("exception", f"{e.__class__.__name__}: {e}")
                 ]
                 item = {
@@ -2372,7 +2288,7 @@ async def _run_batch_extract_core(
     if inputs_index:
         batch_payload["inputs_index"] = inputs_index
 
-    batch_artifact_path = save_batch_artifact(run_id, batch_payload)
+    batch_artifact_path = await asyncio.to_thread(save_batch_artifact,run_id, batch_payload)
 
     return {
         "run_id": run_id,
@@ -2382,7 +2298,6 @@ async def _run_batch_extract_core(
         "timings_ms": batch_payload["timings_ms"],
     }
 
-# --- Batch extract (server-side folder) ---
 
 class BatchExtractResponse(BaseModel):
     run_id: str
@@ -2401,17 +2316,46 @@ class BatchExtractResponse(BaseModel):
     eval: Optional[Dict[str, Any]] = Field(default=None, description="Optional eval result (if gt_path was provided).")
     
 
-async def batch_extract(
-    task_id: str = Field(default="receipt_fields_v1", description="Which extraction task to run for all images."),
-    images_dir: str = Field(default=DEFAULT_IMAGES_DIR, description="Server-side directory with images (must be under /workspace/src)."),
-    glob: str = Field(default="**/*", description="Glob pattern relative to images_dir."),
-    exts: List[str] = Field(default_factory=lambda: ["png", "jpg", "jpeg", "webp"], description="Allowed file extensions (without dot)."),
-    limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of images to process."),
-    concurrency: int = Field(default=4, ge=1, le=32, description="Number of concurrent requests within this process."),
-    run_id: Optional[str] = Field(default=None, description="Optional run id (used to build per-image request_id)."),
+async def _run_eval_batch_vs_gt(
+    *,
+    gt_path: Optional[str],
+    gt_image_key: str,
+    run_id: str,
+    batch_artifact_path: str,
+    principal: ApiPrincipal,
+) -> Optional[Dict[str, Any]]:
+    if not gt_path:
+        return None
 
-    gt_path: Optional[str] = Field(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
-    gt_image_key: str = Field(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
+    _debug_enabled()
+    if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
+        raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
+
+    _validate_under_any_root(Path(gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
+
+    eval_req = EvalBatchVsGTRequest(
+        run_id=run_id,
+        batch_date=Path(str(batch_artifact_path)).parent.name,
+        gt_path=gt_path,
+        gt_image_key=gt_image_key or "image",
+        include_worst=False,
+        str_mode="exact",
+    )
+    eval_resp = await eval_batch_vs_gt(eval_req)
+    return eval_resp.model_dump()
+
+
+async def batch_extract(
+    task_id: str = Form(default="receipt_fields_v1", description="Which extraction task to run for all images."),
+    images_dir: str = Form(default=DEFAULT_IMAGES_DIR, description="Server-side directory with images (must be under /workspace/src)."),
+    glob: str = Form(default="**/*", description="Glob pattern relative to images_dir."),
+    exts: List[str] = Form(default_factory=lambda: ["png", "jpg", "jpeg", "webp"], description="Allowed file extensions (without dot)."),
+    limit: Optional[int] = Form(default=None, ge=1, description="Optional max number of images to process."),
+    concurrency: int = Form(default=4, ge=1, le=32, description="Number of concurrent requests within this process."),
+    run_id: Optional[str] = Form(default=None, description="Optional run id (used to build per-image request_id)."),
+
+    gt_path: Optional[str] = Form(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
+    gt_image_key: str = Form(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
 
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> BatchExtractResponse:
@@ -2457,25 +2401,13 @@ async def batch_extract(
     )
 
     # --- AUTO-EVAL (optional) ---
-    eval_obj: Optional[Dict[str, Any]] = None
-    if gt_path:
-        _debug_enabled()
-        if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
-            raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
-
-        _validate_under_any_root(Path(gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
-
-        eval_req = EvalBatchVsGTRequest(
-            run_id=run_id,
-            batch_date=Path(str(res["batch_artifact_path"])).parent.name,
-            gt_path=gt_path,
-            gt_image_key=gt_image_key or "image",
-            include_worst=False,
-            str_mode="exact",
-        )
-        eval_resp = await eval_batch_vs_gt(eval_req)
-        eval_obj = eval_resp.model_dump()
-
+    eval_obj = await _run_eval_batch_vs_gt(
+        gt_path=gt_path,
+        gt_image_key=gt_image_key,
+        run_id=run_id,
+        batch_artifact_path=str(res["batch_artifact_path"]),
+        principal=principal,
+    )
     summ = res["summary"]
     return BatchExtractResponse(
         run_id=run_id,
@@ -2491,6 +2423,7 @@ async def batch_extract(
         eval=eval_obj,
     )
 
+
 async def batch_extract_upload(
     task_id: str = Form(...),
     persist_inputs: bool = Form(False),
@@ -2499,8 +2432,8 @@ async def batch_extract_upload(
     
     files: List[UploadFile] = File(...),
 
-    gt_path: Optional[str] = Field(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
-    gt_image_key: str = Field(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
+    gt_path: Optional[str] = Form(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
+    gt_image_key: str = Form(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
 
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> BatchExtractResponse:
@@ -2566,24 +2499,15 @@ async def batch_extract_upload(
         },
     )
     # --- AUTO-EVAL (optional) ---
-    eval_obj: Optional[Dict[str, Any]] = None
-    if gt_path:
-        _debug_enabled()
-        if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
-            raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
+    
+    eval_obj = await _run_eval_batch_vs_gt(
+        gt_path=gt_path,
+        gt_image_key=gt_image_key,
+        run_id=run_id,
+        batch_artifact_path=str(res["batch_artifact_path"]),
+        principal=principal,
+    )
 
-        _validate_under_any_root(Path(gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
-
-        eval_req = EvalBatchVsGTRequest(
-            run_id=run_id,
-            batch_date=Path(str(res["batch_artifact_path"])).parent.name,
-            gt_path=gt_path,
-            gt_image_key=gt_image_key or "image",
-            include_worst=False,
-            str_mode="exact",
-        )
-        eval_resp = await eval_batch_vs_gt(eval_req)
-        eval_obj = eval_resp.model_dump()
 
     summ = res["summary"]
     return BatchExtractResponse(
@@ -2600,24 +2524,22 @@ async def batch_extract_upload(
     )
 
 
-# --- Batch rerun (from persisted inputs in previous batch artifact) ---
-
 async def batch_extract_rerun(
-    source_run_id: str = Field(..., description="Existing batch run_id to rerun."),
-    source_batch_date: Optional[str] = Field(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days."),
-    max_days: int = Field(default=90, ge=1, le=365, description="How many recent days to search if source_batch_date is not provided."),
+    source_run_id: str = Form(..., description="Existing batch run_id to rerun."),
+    source_batch_date: Optional[str] = Form(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days."),
+    max_days: int = Form(default=90, ge=1, le=365, description="How many recent days to search if source_batch_date is not provided."),
     
-    task_id: str = Field(default="receipt_fields_v1", description="Task to run for the rerun."),
-    concurrency: int = Field(default=4, ge=1, le=32),
-    run_id: Optional[str] = Field(default=None, description="Optional new run_id (if omitted, generated)."),
+    task_id: str = Form(default="receipt_fields_v1", description="Task to run for the rerun."),
+    concurrency: int = Form(default=4, ge=1, le=32),
+    run_id: Optional[str] = Form(default=None, description="Optional new run_id (if omitted, generated)."),
 
-    gt_path: Optional[str] = Field(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
-    gt_image_key: str = Field(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
+    gt_path: Optional[str] = Form(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
+    gt_image_key: str = Form(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
 
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> BatchExtractResponse:
     task = _get_task(task_id)
-    # TODO: Update search using SQLITE
+    
     src_path = find_batch_artifact_path(source_run_id, date=source_batch_date, max_days=max_days)
     if src_path is None:
         raise HTTPException(status_code=404, detail="Source batch artifact not found.")
@@ -2695,24 +2617,13 @@ async def batch_extract_rerun(
         },
     )
     # --- AUTO-EVAL (optional) ---
-    eval_obj: Optional[Dict[str, Any]] = None
-    if gt_path:
-        _debug_enabled()
-        if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
-            raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
-
-        _validate_under_any_root(Path(gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
-
-        eval_req = EvalBatchVsGTRequest(
-            run_id=run_id,
-            batch_date=Path(str(res["batch_artifact_path"])).parent.name,
-            gt_path=gt_path,
-            gt_image_key=gt_image_key or "image",
-            include_worst=False,
-            str_mode="exact",
-        )
-        eval_resp = await eval_batch_vs_gt(eval_req)
-        eval_obj = eval_resp.model_dump()
+    eval_obj = await _run_eval_batch_vs_gt(
+        gt_path=gt_path,
+        gt_image_key=gt_image_key,
+        run_id=run_id,
+        batch_artifact_path=str(res["batch_artifact_path"]),
+        principal=principal,
+    )
 
     summ = res["summary"]
     return BatchExtractResponse(
