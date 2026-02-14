@@ -71,7 +71,18 @@ def create_api_key(
     key_id: str,
     role: str,
     scopes: Optional[Sequence[str]] = None,
-    db_path: str = settings.AUTH_DB_PATH,
 ) -> Tuple[str, ApiPrincipal]:
     """Creates a new API key. Returns (raw_api_key, principal)."""
-    return _get_store(db_path).create_
+    return AuthStore.create_api_key(key_id, role, scopes)
+
+
+def revoke_api_key(
+    key_id: str,
+) -> bool:
+    """Revokes key by key_id. Returns True if updated."""
+    return AuthStore.revoke_api_key(key_id)
+
+def list_api_keys() -> List[Dict[str, Any]]:
+    """Lists all keys (for admin/CLI tooling)."""
+    return AuthStore.list_api_keys()
+#create_api_key / revoke_api_key / list_api_keys

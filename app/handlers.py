@@ -39,6 +39,16 @@ from jsonschema.exceptions import SchemaError
 
 from app.auth import ApiPrincipal, init_auth_db, require_scopes
 from app.settings import settings
+
+import random, httpx
+from app.vllm_client import VLLMClient, VLLMHTTPError
+
+def get_vllm_client(request: Request) -> VLLMClient:
+    vc = getattr(request.app.state, "vllm_client", None)
+    if vc is None:
+        raise HTTPException(status_code=500, detail="vLLM client is not initialized")
+    return vc
+
 # Artifact helpers moved to app.services.artifacts (legacy names preserved)
 S3_BUCKET = settings.S3_BUCKET or ""
 from app.services.s3_service import (
@@ -65,8 +75,6 @@ from app.services.artifacts import (
 from dotenv import load_dotenv  
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=False)
 
-from app.vllm_client import VLLMClient
-vllm = VLLMClient()
 
 APP_ROOT = Path(__file__).resolve().parent
 SCHEMAS_DIR = APP_ROOT / "schemas"
@@ -1480,7 +1488,9 @@ async def _load_input_bytes_by_rel(input_rel: str) -> bytes:
 # ---------------------------
 
 
-async def health() -> Dict[str, Any]:
+async def health(
+    vllm_client: VLLMClient = Depends(get_vllm_client)
+) -> Dict[str, Any]:
     backend = settings.INFERENCE_BACKEND.strip().lower()
     out: Dict[str, Any] = {"ok": True, "inference_backend": backend}
 
@@ -1493,7 +1503,7 @@ async def health() -> Dict[str, Any]:
         return out
 
     try:
-        models = await vllm.models()
+        models = await vllm_client.models()
         out["vllm_ok"] = True
         out["models"] = [m.get("id") for m in models.get("data", [])]
         return out
@@ -1828,8 +1838,8 @@ async def eval_batch_vs_gt(
         "worst_samples": worst_samples,
         "all_samples": sample_summaries,
     }
-
-    eval_artifact_path = await asyncio.to_thread(save_eval_artifact, payload)
+    owner = (batch_obj.get("auth") or {}).get("key_id") 
+    eval_artifact_path = await asyncio.to_thread(save_eval_artifact, payload, owner)
 
     return EvalBatchVsGTResponse(
         eval_id=eval_id,
@@ -1841,9 +1851,82 @@ async def eval_batch_vs_gt(
     )
 
 
+_RETRY_STATUS = {429, 502, 503, 504}
+_RETRY_EXC = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+              httpx.RemoteProtocolError, httpx.PoolTimeout)
+
+def _retry_delay_s(base: float, attempt: int, max_delay: float, jitter: float) -> float:
+    d = min(base * (2 ** (attempt - 1)), max_delay)
+    return d + (random.random() * jitter)
+
+def _retry_after_from_headers(h: dict[str, str]) -> float | None:
+    ra = (h or {}).get("Retry-After")
+    if not ra:
+        return None
+    try:
+        return float(ra)
+    except Exception:
+        return None
+
+async def _vllm_call_with_retries(
+    *,
+    vllm_client,
+    request_id: str,
+    error_history: list[dict],
+    max_attempts: int,
+    base_delay_s: float,
+    max_delay_s: float,
+    jitter_s: float,
+    **kwargs,
+):
+    last_exc: Exception | None = None
+
+    for a in range(1, max_attempts + 1):
+        try:
+            if a > 1:
+                _log_event(logging.INFO, "vllm_call_retry", attempt=a)
+            return await vllm_client.chat_completions(request_id=request_id, **kwargs)
+
+        except Exception as e:
+            last_exc = e
+            status = None
+            headers = None
+
+            if isinstance(e, VLLMHTTPError):
+                status = e.status_code
+                headers = e.headers
+
+            retryable = isinstance(e, _RETRY_EXC) or (status in _RETRY_STATUS)
+
+            error_history.append(
+                _mk_err(
+                    "vllm_retry" if retryable and a < max_attempts else "vllm_fail",
+                    f"{e.__class__.__name__}: {e}",
+                    attempt=a,
+                    status_code=status,
+                    retryable=bool(retryable),
+                )
+            )
+
+            if (not retryable) or (a >= max_attempts):
+                raise
+
+            # 429: уважать Retry-After, если есть
+            if status == 429 and headers:
+                ra = _retry_after_from_headers(headers)
+                if ra is not None and 0 <= ra <= 30:
+                    await asyncio.sleep(ra)
+                    continue
+
+            await asyncio.sleep(_retry_delay_s(base_delay_s, a, max_delay_s, jitter_s))
+
+    raise last_exc  # pragma: no cover
+
+
 async def extract(
     req: ExtractRequest,
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+    vllm_client: VLLMClient = Depends(get_vllm_client),
 ) -> ExtractResponse:
     task = _get_task(req.task_id)
 
@@ -1909,14 +1992,29 @@ async def extract(
                 raw = _mock_chat_completions(request_id, principal, req.debug, schema_dict=schema_dict)
             else:
                 _log_event(logging.INFO, 'vllm_call_start', backend=backend, model=MODEL_ID, attempt=attempt, retried=retried)
-                raw = await vllm.chat_completions(
+                # raw = await vllm_client.chat_completions(
+                #     model=MODEL_ID,
+                #     messages=messages_cur,
+                #     temperature=temperature,
+                #     max_tokens=max_tokens,
+                #     response_format=response_format,
+                #     request_id=request_id,
+                # )
+                raw = await _vllm_call_with_retries(
+                    vllm_client=vllm_client,
+                    request_id=request_id,
+                    error_history=error_history,
+                    max_attempts=settings.VLLM_RETRY_MAX_ATTEMPTS,
+                    base_delay_s=settings.VLLM_RETRY_BASE_DELAY_S,
+                    max_delay_s=settings.VLLM_RETRY_MAX_DELAY_S,
+                    jitter_s=settings.VLLM_RETRY_JITTER_S,
                     model=MODEL_ID,
                     messages=messages_cur,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     response_format=response_format,
-                    request_id=request_id,
                 )
+
             t_inf1 = time.perf_counter()
             _log_event(logging.INFO, 'vllm_call_end', backend=backend, model=MODEL_ID, attempt=attempt, duration_ms=(t_inf1 - t_inf0) * 1000.0)
             break
@@ -1998,6 +2096,7 @@ async def extract(
                         "total_ms": (time.perf_counter() - t0) * 1000.0,
                     },
                 },
+                principal.key_id,
             )
             detail = f"Inference request failed ({backend}): {err}"
             if _raw_allowed(principal):
@@ -2021,6 +2120,7 @@ async def extract(
                     "total_ms": (time.perf_counter() - t0) * 1000.0,
                 },
             },
+            principal.key_id,
         )
         detail = f"Unexpected {backend} response format."
         if _raw_allowed(principal):
@@ -2052,6 +2152,7 @@ async def extract(
                     "total_ms": (time.perf_counter() - t0) * 1000.0,
                 },
             },
+            principal.key_id,
         )
         detail = f"Model output is not valid JSON ({backend}): {e}"
         if _raw_allowed(principal):
@@ -2083,6 +2184,7 @@ async def extract(
                 "total_ms": (time.perf_counter() - t0) * 1000.0,
             },
         },
+        principal.key_id,
     )
 
     raw_out = raw_text if _raw_allowed(principal) else None
@@ -2130,6 +2232,7 @@ async def _run_batch_extract_core(
     principal: ApiPrincipal,
     source: Dict[str, Any],
     batch_fields: Optional[Dict[str, Any]] = None,
+    vllm_client: VLLMClient = Depends(get_vllm_client),
 ) -> Dict[str, Any]:
     """Shared batch runner: prepares ExtractRequest and calls /v1/extract for each prepared input."""
     t0 = time.perf_counter()
@@ -2153,7 +2256,7 @@ async def _run_batch_extract_core(
 
                 token_item = _set_request_id(request_id)
                 try:
-                    resp = await extract(sub_req, principal)
+                    resp = await extract(sub_req, principal, vllm_client=vllm_client)
                 finally:
                     _reset_request_id(token_item)
 
@@ -2288,7 +2391,7 @@ async def _run_batch_extract_core(
     if inputs_index:
         batch_payload["inputs_index"] = inputs_index
 
-    batch_artifact_path = await asyncio.to_thread(save_batch_artifact,run_id, batch_payload)
+    batch_artifact_path = await asyncio.to_thread(save_batch_artifact,run_id, batch_payload, principal.key_id)
 
     return {
         "run_id": run_id,
@@ -2298,6 +2401,27 @@ async def _run_batch_extract_core(
         "timings_ms": batch_payload["timings_ms"],
     }
 
+
+class BatchExtractRequest(BaseModel):
+    images_dir: str = Field(default=DEFAULT_IMAGES_DIR, description="Server-side directory with images (must be under DATA_ROOT).")
+    glob: str = Field(default="**/*", description="Glob pattern relative to images_dir.")
+    exts: List[str] = Field(default_factory=lambda: ["png", "jpg", "jpeg", "webp"], description="Allowed file extensions (without dot).")
+    limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of images to process.")
+    
+    task_id: str = Field(default="receipt_fields_v1", description="Which extraction task to run for all images.")
+    concurrency: int = Field(default=4, ge=1, le=32, description="Number of concurrent requests within this process.")
+    run_id: Optional[str] = Field(default=None, description="Optional run id (used to build per-image request_id).")
+    gt_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional path to GT JSON. If provided, the server will run batch eval vs GT after batch_extract. "
+            "For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR."
+        ),
+    )
+    gt_image_key: str = Field(
+        default="image",
+        description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file.",
+    )
 
 class BatchExtractResponse(BaseModel):
     run_id: str
@@ -2328,8 +2452,8 @@ async def _run_eval_batch_vs_gt(
         return None
 
     _debug_enabled()
-    if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
-        raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
+    if settings.AUTH_ENABLED and ("debug:run" not in principal.scopes):
+        raise HTTPException(status_code=403, detail="Missing required scope: debug:run")
 
     _validate_under_any_root(Path(gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
 
@@ -2346,26 +2470,16 @@ async def _run_eval_batch_vs_gt(
 
 
 async def batch_extract(
-    task_id: str = Form(default="receipt_fields_v1", description="Which extraction task to run for all images."),
-    images_dir: str = Form(default=DEFAULT_IMAGES_DIR, description="Server-side directory with images (must be under /workspace/src)."),
-    glob: str = Form(default="**/*", description="Glob pattern relative to images_dir."),
-    exts: List[str] = Form(default_factory=lambda: ["png", "jpg", "jpeg", "webp"], description="Allowed file extensions (without dot)."),
-    limit: Optional[int] = Form(default=None, ge=1, description="Optional max number of images to process."),
-    concurrency: int = Form(default=4, ge=1, le=32, description="Number of concurrent requests within this process."),
-    run_id: Optional[str] = Form(default=None, description="Optional run id (used to build per-image request_id)."),
-
-    gt_path: Optional[str] = Form(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
-    gt_image_key: str = Form(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
-
+    req: BatchExtractRequest,
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> BatchExtractResponse:
-    task = _get_task(task_id)
+    task = _get_task(req.task_id)
 
-    run_id = (run_id or _default_run_id()).strip()
+    run_id = (req.run_id or _default_run_id()).strip()
     _validate_request_id_for_fs(run_id)
 
-    images_dir = _validate_under_data_root(Path(images_dir).expanduser())
-    files = _list_image_files(images_dir, glob, exts, limit)
+    images_dir = _validate_under_data_root(Path(req.images_dir).expanduser())
+    files = _list_image_files(images_dir, req.glob, req.exts, req.limit)
 
     inputs: List[_BatchInput] = []
     for p in files:
@@ -2380,30 +2494,30 @@ async def batch_extract(
 
     res = await _run_batch_extract_core(
         run_id=run_id,
-        task_id=task_id,
+        task_id=req.task_id,
         task=task,
         inputs=inputs,
-        concurrency=concurrency,
+        concurrency=req.concurrency,
         principal=principal,
         source={
             "type": "server_dir",
             "images_dir": str(images_dir),
-            "glob": glob,
-            "exts": exts,
-            "limit": limit,
+            "glob": req.glob,
+            "exts": req.exts,
+            "limit": req.limit,
         },
         batch_fields={
             "images_dir": str(images_dir),
-            "glob": glob,
-            "exts": exts,
-            "limit": limit,
+            "glob": req.glob,
+            "exts": req.exts,
+            "limit": req.limit,
         },
     )
 
     # --- AUTO-EVAL (optional) ---
     eval_obj = await _run_eval_batch_vs_gt(
-        gt_path=gt_path,
-        gt_image_key=gt_image_key,
+        gt_path=req.gt_path,
+        gt_image_key=req.gt_image_key,
         run_id=run_id,
         batch_artifact_path=str(res["batch_artifact_path"]),
         principal=principal,
@@ -2411,7 +2525,7 @@ async def batch_extract(
     summ = res["summary"]
     return BatchExtractResponse(
         run_id=run_id,
-        task_id=task_id,
+        task_id=req.task_id,
         images_dir=str(images_dir),
         total=int(summ["total"]),
         ok=int(summ["ok"]),
@@ -2523,24 +2637,34 @@ async def batch_extract_upload(
         eval=eval_obj,
     )
 
+class BatchRerunRequest(BaseModel):
+    source_run_id: str = Field(..., description="Existing batch run_id to rerun.")
+    source_batch_date: Optional[str] = Field(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days.")
+    max_days: int = Field(default=90, ge=1, le=365, description="How many recent days to search if source_batch_date is not provided.")
+
+    task_id: str = Field(default="receipt_fields_v1", description="Task to run for the rerun.")
+    concurrency: int = Field(default=4, ge=1, le=32)
+    run_id: Optional[str] = Field(default=None, description="Optional new run_id (if omitted, generated).")
+    gt_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional path to GT JSON. If provided, the server will run batch eval vs GT after batch_extract. "
+            "For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR."
+        ),
+    )
+    gt_image_key: str = Field(
+        default="image",
+        description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file.",
+    )
+
 
 async def batch_extract_rerun(
-    source_run_id: str = Form(..., description="Existing batch run_id to rerun."),
-    source_batch_date: Optional[str] = Form(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days."),
-    max_days: int = Form(default=90, ge=1, le=365, description="How many recent days to search if source_batch_date is not provided."),
-    
-    task_id: str = Form(default="receipt_fields_v1", description="Task to run for the rerun."),
-    concurrency: int = Form(default=4, ge=1, le=32),
-    run_id: Optional[str] = Form(default=None, description="Optional new run_id (if omitted, generated)."),
-
-    gt_path: Optional[str] = Form(default=None, description=("If provided, the server will run batch eval vs GT after batch_extract.For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR.")),
-    gt_image_key: str = Form(default="file",description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file."),
-
+    req: BatchRerunRequest,
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> BatchExtractResponse:
-    task = _get_task(task_id)
+    task = _get_task(req.task_id)
     
-    src_path = find_batch_artifact_path(source_run_id, date=source_batch_date, max_days=max_days)
+    src_path = find_batch_artifact_path(req.source_run_id, date=req.source_batch_date, max_days=req.max_days)
     if src_path is None:
         raise HTTPException(status_code=404, detail="Source batch artifact not found.")
 
@@ -2561,7 +2685,7 @@ async def batch_extract_rerun(
             detail="Source batch has no persisted inputs (inputs_index missing/empty). Re-run is not possible.",
         )
 
-    run_id = (run_id or _default_run_id()).strip()
+    run_id = (req.run_id or _default_run_id()).strip()
     _validate_request_id_for_fs(run_id)
 
     inputs: List[_BatchInput] = []
@@ -2576,7 +2700,8 @@ async def batch_extract_rerun(
         mt = str(ix.get("mime_type") or mimetypes.guess_type(orig_name)[0] or "image/png")
         sha = str(ix.get("sha256") or "") or None
 
-        req_id = _make_batch_request_id(run_id, orig_name)
+        uniq = input_rel or (sha or orig_name)
+        req_id = _make_batch_request_id(run_id, uniq)
 
         async def _lb(rel=input_rel) -> bytes:
             return await _load_input_bytes_by_rel(rel)
@@ -2600,26 +2725,26 @@ async def batch_extract_rerun(
 
     res = await _run_batch_extract_core(
         run_id=run_id,
-        task_id=task_id,
+        task_id=req.task_id,
         task=task,
         inputs=inputs,
-        concurrency=concurrency,
+        concurrency=req.concurrency,
         principal=principal,
         source={
             "type": "rerun",
-            "source_run_id": source_run_id,
+            "source_run_id": req.source_run_id,
             "source_batch_date": artifact_date_from_path(src_path),
             "source_batch_artifact": to_artifact_rel(src_path) if src_path is not None else None,
         },
         batch_fields={
-            "source_run_id": source_run_id,
+            "source_run_id": req.source_run_id,
             "source_batch_date": artifact_date_from_path(src_path),
         },
     )
     # --- AUTO-EVAL (optional) ---
     eval_obj = await _run_eval_batch_vs_gt(
-        gt_path=gt_path,
-        gt_image_key=gt_image_key,
+        gt_path=req.gt_path,
+        gt_image_key=req.gt_image_key,
         run_id=run_id,
         batch_artifact_path=str(res["batch_artifact_path"]),
         principal=principal,
@@ -2628,7 +2753,7 @@ async def batch_extract_rerun(
     summ = res["summary"]
     return BatchExtractResponse(
         run_id=run_id,
-        task_id=task_id,
+        task_id=req.task_id,
         total=int(summ["total"]),
         ok=int(summ["ok"]),
         failed=int(summ["failed"]),

@@ -173,9 +173,10 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
 ### Smoke test (PowerShell)
 ```powershell
+
 # ====== CONFIG ======
 $BASE   = "http://127.0.0.1:8080"         # или https://<runpod|vps-host>
-$APIKEY = "oAJcMSdufcInKdy9PRb-sb-5H-vDquybRQSpym3fZg4"     # admin key из auth_cli create-key (api_key)
+$APIKEY = "oAJcMSdufcInKdy9PRb-sb-5H-vDquybRQSpym3fZg4" 
 $AUTH   = "Authorization: Bearer $APIKEY"
 
 # Чтобы видеть статус-код в конце:
@@ -188,37 +189,32 @@ curl.exe -sS -w $CURL_W "$BASE/health"
 curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/me"
 
 # ====== 2) /v1/extract (из локального файла -> base64) ======
-$IMG = ".\data\batch_smoke\images\cord_0000.jpg"   # если файл рядом с проектом
+$IMG = ".\data\batch_smoke\images\cord_0000.jpg"   # путь к любому PNG/JPG
 $IMG_B64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($IMG))
-
-$RID = "smoke_" + [guid]::NewGuid().ToString("N")
-
+$PREFIX = "smoke_mock_" # smoke_mock_ or smoke_vllm for example
+$RID = $PREFIX + [guid]::NewGuid().ToString("N")   # request_id (и X-Request-ID)
 $body = @{
   task_id      = "receipt_fields_v1"
   image_base64 = $IMG_B64
-  mime_type    = "image/jpeg"
+  mime_type    = "image/png"
   request_id   = $RID
 } | ConvertTo-Json -Depth 6
 
-New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
-$bodyFile = ".\tmp\extract_body.json"
-Set-Content -Path $bodyFile -Value $body -Encoding UTF8
-
-curl.exe -sS -X POST "$BASE/v1/extract" `
+curl.exe -sS -w $CURL_W -X POST "$BASE/v1/extract" `
   -H $AUTH `
   -H "Content-Type: application/json" `
   -H "X-Request-ID: $RID" `
-  --data-binary "@$bodyFile"
-
+  --data-binary $body
 
 # ====== 3) /v1/batch_extract_upload (multipart) ======
 # (надёжнее, чем server-side batch_extract: не требует датасета на сервере)
-$RUN_ID = "smoke_" + (Get-Date -Format "yyyyMMddTHHmmss")
+$RUN_ID = $PREFIX + (Get-Date -Format "yyyyMMddTHHmmss")
 
 curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
   -H $AUTH `
   -F "task_id=receipt_fields_v1" `
-  -F "persist_inputs=false" `
+  -F "persist_inputs=true" `  # нужно true, если планируешь /v1/batch_extract_rerun
+
   -F "concurrency=2" `
   -F "run_id=$RUN_ID" `
   -F "files=@$IMG;type=image/png"
@@ -228,44 +224,37 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
 # curl.exe ... -F "files=@$IMG;type=image/png" -F "files=@$IMG2;type=image/jpeg"
 
 # ====== 4) /v1/batch_extract_rerun (после upload) ======
-# ВНИМАНИЕ: из-за использования pydantic.Field в сигнатуре, у тебя может быть так,
-# что FastAPI ожидает параметры как query, а не как JSON-body.
-# Поэтому даю 2 варианта: сначала пробуй JSON, если 422 — используй query.
+# ВАЖНО: rerun возможен только если исходный upload был с persist_inputs=true (иначе inputs_index пустой).
+# Каноничный контракт: JSON-body.
 
-# 4a) Попытка JSON-body:
 $body_rerun = @{
-  source_run_id = "smoke_20260211T170102"
+  source_run_id = $RUN_ID
   task_id       = "receipt_fields_v1"
   concurrency   = 2
+  # run_id      = "smoke_rerun_..."  # опционально: новый run_id
+  # gt_path     = "/workspace/src/data/gt.json"  # опционально (только DEBUG_MODE=1 + debug:run)
+  # gt_image_key= "file"                       # опционально, по умолчанию "file" (как в твоём GT)
 } | ConvertTo-Json -Depth 6
-New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
-$bodyFile = ".\tmp\extract_body2.json"
-Set-Content -Path $bodyFile -Value $body_rerun -Encoding UTF8
+
 curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_rerun" `
   -H $AUTH `
   -H "Content-Type: application/json" `
   --data-raw $body_rerun
-curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_rerun" `
-  -H $AUTH `
-  -F "concurrency=2" `
-  -F "source_run_id=$RUN_ID" 
-
-# 4b) Вариант query (если 4a вернул 422):
-curl.exe -sS -w $CURL_W -X POST `
-  -H $AUTH `
-  "$BASE/v1/batch_extract_rerun?source_run_id=$RUN_ID&task_id=receipt_fields_v1&concurrency=2"
 
 # ====== 5) /v1/batch_extract (server-side dir) ======
-# Этот эндпоинт требует, чтобы images_dir был ПОД data root на сервере.
-# Аналогично: сначала пробуй JSON, если 422 — query.
+# Этот эндпоинт требует, чтобы images_dir был ПОД DATA_ROOT на сервере (см. переменную DATA_ROOT).
+# Каноничный контракт: JSON-body.
 
-# 5a) JSON-body (может не сработать из-за Field):
 $body_batch = @{
   task_id      = "receipt_fields_v1"
-  images_dir   = "/workspace/src/data"   # поменяй под свою структуру на сервере
+  images_dir   = "/workspace/src/data"   # пример: DATA_ROOT/data
+  glob         = "**/*"
+  exts         = @("png","jpg","jpeg","webp")
   limit        = 2
   concurrency  = 2
   run_id       = ("smoke_dir_" + (Get-Date -Format "yyyyMMddTHHmmss"))
+  # gt_path     = "/workspace/src/data/gt.json"  # опционально (только DEBUG_MODE=1 + debug:run)
+  # gt_image_key= "file"                       # опционально, по умолчанию "file" (как в твоём GT)
 } | ConvertTo-Json -Depth 6
 
 curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract" `
@@ -273,13 +262,8 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract" `
   -H "Content-Type: application/json" `
   --data-raw $body_batch
 
-# 5b) Query-вариант (если 5a = 422):
-# (без glob/exts — пусть будут дефолты)
-curl.exe -sS -w $CURL_W -X POST `
-  -H $AUTH `
-  "$BASE/v1/batch_extract?task_id=receipt_fields_v1&images_dir=/workspace/src/data&limit=2&concurrency=2&run_id=smoke_dir_$(Get-Date -Format yyyyMMddTHHmmss)"
-
-# ====== 6) DEBUG эндпоинты (только если DEBUG_MODE=1 и ключ со scope debug:read_raw / debug:run) ======
+# ====== 6) DEBUG эндпоинты (только если DEBUG_MODE=1 и ключ со scope debug:read_raw) ======
+ (только если DEBUG_MODE=1 и ключ со scope debug:read_raw / debug:run) ======
 # Список артефактов:
 curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/debug/artifacts?limit=5"
 
@@ -461,6 +445,6 @@ git push origin orch-v0.3.0
 ---
 
 ## Roadmap (ближайшее)
-- Batch через manifest (R2/S3, presigned URLs).
+- 
 - Pod manager через RunPod API (start/stop, обновление endpoint).
 - `/readyz` (проверка доступности vLLM и R2).

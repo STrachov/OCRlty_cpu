@@ -116,7 +116,7 @@ class ArtifactIndex:
                         INSERT INTO artifact_index (kind, artifact_id, owner_key_id, day, storage, full_ref, rel_ref, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(kind, artifact_id) DO UPDATE SET
-                            owner_key_id=excluded.owner_key_id,
+                            owner_key_id=COALESCE(excluded.owner_key_id, artifact_index.owner_key_id),
                             day=excluded.day,
                             storage=excluded.storage,
                             full_ref=excluded.full_ref,

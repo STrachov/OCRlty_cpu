@@ -160,7 +160,7 @@ def artifact_index_init() -> None:
         _index.init()
 
 
-def _index_upsert(kind: str, artifact_id: str, ref: Union[str, Path]) -> None:
+def _index_upsert(kind: str, artifact_id: str, ref: Union[str, Path], owner_key_id: Optional[str] = None) -> None:
     if _index is None:
         return
     try:
@@ -170,7 +170,7 @@ def _index_upsert(kind: str, artifact_id: str, ref: Union[str, Path]) -> None:
             full_ref=str(ref),
             rel_ref=to_artifact_rel(ref),
             day=artifact_date_from_path(ref) or _utc_day(),
-            owner_key_id=None,
+            owner_key_id=owner_key_id,
         )
     except Exception:
         pass
@@ -202,29 +202,29 @@ def _index_delete(kind: str, artifact_id: str) -> None:
 # Save/load artifacts
 # ---------------------------
 
-def save_artifact(request_id: str, payload: Dict[str, Any]) -> Union[str, Path]:
+def save_artifact(request_id: str, payload: Dict[str, Any], owner_key_id : Optional[str] = None) -> Union[str, Path]:
     _ensure_artifacts_dir()
     ref = _extract_artifact_ref(request_id)
     if s3_enabled():
         s3_put_json(str(ref), payload)
     else:
         _write_json_file(Path(ref), payload)
-    _index_upsert("extract", request_id, ref)
+    _index_upsert("extract", request_id, ref, owner_key_id)
     return ref
 
 
-def save_batch_artifact(run_id: str, payload: Dict[str, Any]) -> Union[str, Path]:
+def save_batch_artifact(run_id: str, payload: Dict[str, Any], owner_key_id : Optional[str] = None) -> Union[str, Path]:
     _ensure_artifacts_dir()
     ref = _batch_artifact_ref(run_id)
     if s3_enabled():
         s3_put_json(str(ref), payload)
     else:
         _write_json_file(Path(ref), payload)
-    _index_upsert("batch", run_id, ref)
+    _index_upsert("batch", run_id, ref, owner_key_id)
     return ref
 
 
-def save_eval_artifact(payload: Dict[str, Any]) -> Union[str, Path]:
+def save_eval_artifact(payload: Dict[str, Any], owner_key_id : Optional[str] = None) -> Union[str, Path]:
     _ensure_artifacts_dir()
     eval_id = str(payload.get("eval_id") or "")
     if not eval_id:
@@ -234,7 +234,7 @@ def save_eval_artifact(payload: Dict[str, Any]) -> Union[str, Path]:
         s3_put_json(str(ref), payload)
     else:
         _write_json_file(Path(ref), payload)
-    _index_upsert("eval", eval_id, ref)
+    _index_upsert("eval", eval_id, ref, owner_key_id)
     return ref
 
 

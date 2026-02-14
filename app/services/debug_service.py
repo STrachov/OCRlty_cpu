@@ -38,7 +38,7 @@ class DebugService:
             if not artifacts.DATE_RE.match(date):
                 raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format.")
 
-            if s3_service._s3_enabled():
+            if s3_service.s3_enabled():
                 prefix = s3_service._s3_key(f"extracts/{date}/")
                 objs = s3_service._s3_list_objects(prefix, limit=limit * 3)
                 objs.sort(
@@ -87,7 +87,7 @@ class DebugService:
                     continue
                 day = artifacts.artifact_date_from_path(ref) or "unknown"
                 arcname = f"extracts/{day}/{rid}.json"
-                if s3_service._s3_enabled() and isinstance(ref, str) and not ref.startswith("/"):
+                if s3_service.s3_enabled() and isinstance(ref, str) and not ref.startswith("/"):
                     data = s3_service._s3_get_text(ref).encode("utf-8", errors="replace")
                 else:
                     data = Path(ref).read_bytes()
@@ -119,11 +119,11 @@ class DebugService:
         ref = artifacts.find_artifact_path(request_id, date=date, max_days=30)
         if ref is None:
             raise HTTPException(status_code=404, detail="Artifact not found.")
-        if s3_service._s3_enabled() and isinstance(ref, str) and not ref.startswith("/"):
+        if s3_service.s3_enabled() and isinstance(ref, str) and not ref.startswith("/"):
             raw = s3_service._s3_get_text(ref)
         else:
             raw = Path(ref).read_text(encoding="utf-8", errors="replace")
-        return {"request_id": request_id, "date": A.artifact_date_from_path(ref), "raw": raw}
+        return {"request_id": request_id, "date": artifacts.artifact_date_from_path(ref), "raw": raw}
 
     async def eval_batch_vs_gt(self, req: handlers.EvalBatchVsGTRequest) -> handlers.EvalBatchVsGTResponse:
         _require_debug_enabled()

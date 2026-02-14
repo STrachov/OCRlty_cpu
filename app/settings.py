@@ -25,11 +25,37 @@ class Settings(BaseSettings):
     ARTIFACT_INDEX_DB_PATH: str ="/data/db/artifacts.db"
 
     VLLM_MODEL: str = "Qwen/Qwen3-VL-8B-Instruct"
+    VLLM_BASE_URL: str = "http://127.0.0.1:8000"
+    VLLM_API_KEY: str = ""
+    
+    VLLM_TIMEOUT_S: int = 120
+
+    VLLM_CONNECT_TIMEOUT_S: float = 10.0
+    VLLM_READ_TIMEOUT_S: float = 180.0
+    VLLM_WRITE_TIMEOUT_S: float = 30.0
+    VLLM_POOL_TIMEOUT_S: float = 10.0
+
+    VLLM_RETRY_MAX_ATTEMPTS: int = 3
+    VLLM_RETRY_BASE_DELAY_S: float = 0.25
+    VLLM_RETRY_MAX_DELAY_S: float = 2.0
+    VLLM_RETRY_JITTER_S: float = 0.25
+
+    VLLM_HTTP_MAX_CONNECTIONS: int = 100
+    VLLM_HTTP_MAX_KEEPALIVE: int = 20
+    VLLM_HTTP_KEEPALIVE_EXPIRY_S: float = 30.0
     # --- Logging ---
     # Defaults are suitable for Docker (stdout) + log collectors (Loki/ELK).
     LOG_LEVEL: str = "INFO"          # DEBUG | INFO | WARNING | ERROR
     LOG_FORMAT: str = "json"         # json | text
 
+    # --- Jobs ---
+    JOBS_BACKEND: str = "local"          # local | celery
+    JOBS_DB_PATH: str = "/data/db/jobs.db"
+    JOBS_MAX_CONCURRENCY: int = 2
+
+    # --- Celery (only if JOBS_BACKEND=celery) ---
+    CELERY_BROKER_URL: str = "redis://redis:6379/0"
+    CELERY_RESULT_BACKEND: str | None = None
 
 
 

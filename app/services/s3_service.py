@@ -227,7 +227,7 @@ def s3_key(rel: str) -> str:
 def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
     return _s3_put_json(key, payload)
 
-def s3_put_bytes(*, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+def s3_put_bytes(*, key: str, data: bytes, content_type: str = "application/octet-stream") -> bool:
     body = data or b""
 
     def _do():
@@ -235,7 +235,7 @@ def s3_put_bytes(*, key: str, data: bytes, content_type: str = "application/octe
             "Bucket": _S3_BUCKET,
             "Key": key,
             "Body": body,
-            "ContentType": content_type or "application/octet-stream",
+            "ContentType": content_type,
             "CacheControl": "no-store",
         }
         if not _S3_ALLOW_OVERWRITE:
@@ -244,10 +244,11 @@ def s3_put_bytes(*, key: str, data: bytes, content_type: str = "application/octe
 
     try:
         s3_call_with_retries(_do, op="put_object")
+        return True
     except botocore.exceptions.ClientError as e:
         code = (e.response or {}).get("Error", {}).get("Code", "") or ""
-        if code in {"PreconditionFailed"} and not _S3_ALLOW_OVERWRITE:
-            return
+        if code in {"PreconditionFailed", "412"} and not _S3_ALLOW_OVERWRITE:
+            return False
         raise
 
 def s3_get_text(key: str) -> str:
