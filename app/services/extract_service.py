@@ -110,7 +110,6 @@ class BatchExtractRequest(BaseModel):
     task_id: str = Field(..., description="Task registry id.")
     images_dir: str = Field(default=DEFAULT_IMAGES_DIR, description="Directory under DATA_ROOT containing images.")
     glob: str = Field(default="**/*", description="Glob for images_dir scan.")
-    exts: List[str] = Field(default_factory=lambda: ["png", "jpg", "jpeg", "webp"], description="Allowed file extensions (without dot).")
     concurrency: int = Field(default=4, ge=1, le=64)
     run_id: Optional[str] = Field(default=None, description="Optional run id. If omitted - generated.")
     gt_path: Optional[str] = Field(default=None, description="Optional GT JSON path to auto-run eval (debug only).")
@@ -120,9 +119,28 @@ class BatchExtractRequest(BaseModel):
     limit: Optional[int] = Field(default=None, ge=1, le=100000)
 
 
+
+class BatchInputRef(BaseModel):
+    file: str
+    input_ref: str
+    mime_type: Optional[str] = None
+
+
+class BatchExtractInputsRequest(BaseModel):
+    task_id: str = Field(..., description="Task registry id.")
+    concurrency: int = Field(default=4, ge=1, le=64)
+    run_id: Optional[str] = Field(default=None, description="Optional run id. If omitted - generated.")
+    inputs: List[BatchInputRef] = Field(..., description="List of persisted input refs to process.")
+    gt_path: Optional[str] = Field(default=None, description="Optional GT JSON path to auto-run eval (debug only).")
+    gt_image_key: str = Field(default="image", description="GT key with image filename/path.")
+    gt_record_key: Optional[str] = Field(default=None, description="Optional: nested key in GT record with payload to compare.")
+    include_worst: bool = Field(default=False)
+    limit: Optional[int] = Field(default=None, ge=1, le=100000)
+
 class BatchItemResult(BaseModel):
     file: str
     request_id: str
+    input_ref: Optional[str] = None
     artifact_rel: Optional[str] = None
     ok: bool = True
     error: Optional[Dict[str, Any]] = None
@@ -413,6 +431,27 @@ def _load_input_bytes_by_rel(rel: str) -> bytes:
         raise HTTPException(status_code=404, detail=f"Input ref not found: {rel}")
     return abs_p.read_bytes()
 
+def persist_input_bytes(*, data: bytes, name_hint: str) -> str:
+    """Persist bytes into artifacts inputs/.. and return input_ref (relative path).
+
+    This is a small public wrapper used by async endpoints to avoid storing base64 in JobsStore.
+    """
+    return _persist_input_bytes(data=data, name_hint=name_hint)
+
+
+async def persist_upload_files(files: List[UploadFile]) -> List[Dict[str, Any]]:
+    """Persist uploaded files and return list of dicts: {file, input_ref, mime_type}."""
+    out: List[Dict[str, Any]] = []
+    for uf in files:
+        data = await uf.read()
+        if not data:
+            continue
+        mime = (uf.content_type or _guess_mime_type(uf.filename or "file")).split(";")[0].strip() or "application/octet-stream"
+        ref = await asyncio.to_thread(_persist_input_bytes, data=data, name_hint=uf.filename or "file")
+        out.append({"file": uf.filename or "file", "input_ref": ref, "mime_type": mime})
+    return out
+
+
 
 # -----------------------
 # Extract (single)
@@ -694,29 +733,16 @@ def _guess_mime_type(name: str) -> str:
     return mt or "application/octet-stream"
 
 
-def _list_image_files(root: Path, pattern: str, exts: Optional[List[str]] = None) -> List[str]:
+def _list_image_files(root: Path, pattern: str) -> List[str]:
     if "**" in pattern:
         files = sorted([str(p) for p in root.glob(pattern) if p.is_file()])
     else:
         files = sorted([str(p) for p in root.rglob(pattern) if p.is_file()])
-
-    default_allowed = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-    allowed = set(default_allowed)
-
-    if exts:
-        allowed = set()
-        for e in exts:
-            s = str(e or "").strip().lower()
-            if not s:
-                continue
-            if not s.startswith("."):
-                s = "." + s
-            allowed.add(s)
-
-    out: List[str] = []
+    # basic image-ish filter
+    out = []
     for f in files:
         ext = Path(f).suffix.lower()
-        if ext in allowed:
+        if ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
             out.append(f)
     return out
 
@@ -830,6 +856,7 @@ async def _run_batch_extract_core(
                     BatchItemResult(
                         file=inp.file,
                         request_id=request_id,
+                        input_ref=inp.input_ref,
                         artifact_rel=resp.artifact_path,
                         ok=resp.error is None,
                         error=resp.error,
@@ -848,6 +875,7 @@ async def _run_batch_extract_core(
                     BatchItemResult(
                         file=inp.file,
                         request_id=request_id,
+                        input_ref=inp.input_ref,
                         artifact_rel=str(art_ref) if art_ref else None,
                         ok=False,
                         error=_mk_err("batch_item_failed", str(e)),
@@ -917,7 +945,7 @@ async def batch_extract(
     _get_task(req.task_id)  # validate
 
     images_dir = _validate_under_data_root(Path(req.images_dir))
-    files = _list_image_files(images_dir, req.glob, req.exts)
+    files = _list_image_files(images_dir, req.glob)
     if not files:
         raise HTTPException(status_code=404, detail="No image files found in images_dir with given glob.")
 
@@ -945,6 +973,52 @@ async def batch_extract(
     # fill response fields
     resp.images_dir = str(images_dir)
     resp.glob = req.glob
+    return resp
+
+
+async def batch_extract_inputs(
+    req: BatchExtractInputsRequest,
+    *,
+    principal: ApiPrincipal,
+    vllm_client: VLLMClient,
+) -> BatchExtractResponse:
+    _get_task(req.task_id)  # validate
+    run_id2 = req.run_id or _default_run_id()
+
+    inputs: List[_BatchInput] = []
+    for it in req.inputs:
+        # it can be dict-like if called from job executor
+        if isinstance(it, dict):
+            file = str(it.get("file") or "file")
+            input_ref = str(it.get("input_ref") or "")
+            mime_type = it.get("mime_type")
+        else:
+            file = str(it.file or "file")
+            input_ref = str(it.input_ref or "")
+            mime_type = it.mime_type
+
+        if not input_ref:
+            continue
+        inputs.append(_BatchInput(file=file, bytes=None, mime_type=mime_type, input_ref=input_ref))
+
+    if not inputs:
+        raise HTTPException(status_code=400, detail="No inputs provided (input_ref list is empty).")
+
+    resp = await _run_batch_extract_core(
+        task_id=req.task_id,
+        run_id=run_id2,
+        inputs=inputs,
+        concurrency=req.concurrency,
+        principal=principal,
+        vllm_client=vllm_client,
+        gt_path=req.gt_path,
+        gt_image_key=req.gt_image_key,
+        gt_record_key=req.gt_record_key,
+        include_worst=req.include_worst,
+        limit=req.limit,
+    )
+    resp.images_dir = "(upload_refs)"
+    resp.glob = "(upload_refs)"
     return resp
 
 
