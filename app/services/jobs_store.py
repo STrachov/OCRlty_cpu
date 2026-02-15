@@ -130,22 +130,18 @@ class JobsStore:
                     kind             TEXT NOT NULL,
                     status           TEXT NOT NULL
                         CHECK (status IN ('{STATUS_QUEUED}','{STATUS_RUNNING}','{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}')),
-
                     created_at       TEXT NOT NULL,
                     updated_at       TEXT NOT NULL,
                     started_at       TEXT,
                     finished_at      TEXT,
-
                     owner_key_id     TEXT,
                     owner_role       TEXT,
                     owner_scopes     TEXT NOT NULL,  -- JSON array
 
                     cancel_requested INTEGER NOT NULL DEFAULT 0
                         CHECK (cancel_requested IN (0,1)),
-
                     request_json       TEXT NOT NULL,  -- JSON object (job input / params)
                     progress_json      TEXT,           -- JSON object (small progress marker)
-                    result_json        TEXT,           -- LEGACY (do not use; kept for older DBs)
                     error_json         TEXT,           -- JSON object (small error summary)
 
                     -- Thin results: keep only pointer + summary in JobsStore.
@@ -153,7 +149,6 @@ class JobsStore:
                     result_meta_json   TEXT,           -- JSON object (small summary)
                     result_bytes       INTEGER,
                     result_sha256      TEXT,
-
                     error_ref          TEXT            -- artifact key/path with full error details
                 );
                 """
@@ -192,12 +187,7 @@ class JobsStore:
         result_ref = str(r["result_ref"]) if ("result_ref" in keys and r["result_ref"]) else None
         error_ref = str(r["error_ref"]) if ("error_ref" in keys and r["error_ref"]) else None
 
-        # Prefer new thin meta column; fall back to legacy result_json for older DBs.
-        result_meta = None
-        if "result_meta_json" in keys and r["result_meta_json"]:
-            result_meta = _json_loads(r["result_meta_json"])
-        elif "result_json" in keys and r["result_json"]:
-            result_meta = _json_loads(r["result_json"])
+        result_meta = _json_loads(r["result_meta_json"]) if ("result_meta_json" in keys and r["result_meta_json"]) else None
 
         result_bytes = int(r["result_bytes"]) if ("result_bytes" in keys and r["result_bytes"] is not None) else None
         result_sha256 = str(r["result_sha256"]) if ("result_sha256" in keys and r["result_sha256"]) else None
@@ -240,8 +230,8 @@ class JobsStore:
                     created_at, updated_at,
                     owner_key_id, owner_role, owner_scopes,
                     cancel_requested,
-                    request_json, progress_json, result_json, error_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, NULL);
+                    request_json, progress_json, error_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL);
                 """,
                 (
                     job_id,
@@ -362,7 +352,6 @@ class JobsStore:
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     cancel_requested = 1,
-                    result_json = NULL,
                     result_ref = NULL,
                     result_meta_json = NULL,
                     result_bytes = NULL,
@@ -383,7 +372,6 @@ class JobsStore:
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    result_json = NULL,
                     result_ref = ?,
                     result_meta_json = ?,
                     result_bytes = ?,
@@ -426,7 +414,6 @@ class JobsStore:
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     cancel_requested = 1,
-                    result_json = NULL,
                     result_ref = NULL,
                     result_meta_json = NULL,
                     result_bytes = NULL,
@@ -447,7 +434,6 @@ class JobsStore:
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    result_json = NULL,
                     result_ref = NULL,
                     result_meta_json = NULL,
                     result_bytes = NULL,
@@ -485,8 +471,7 @@ class JobsStore:
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     cancel_requested = 1,
-                    result_json = NULL
-                WHERE job_id = ?
+                    WHERE job_id = ?
                   AND status IN (?, ?);
                 """,
                 (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED, STATUS_RUNNING),
@@ -570,8 +555,7 @@ class JobsStore:
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     cancel_requested = 1,
-                    result_json = NULL
-                WHERE status IN ({q_marks})
+                    WHERE status IN ({q_marks})
                   AND cancel_requested = 1
                   AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
                 """,
@@ -586,8 +570,7 @@ class JobsStore:
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     error_json = ?,
-                    result_json = NULL
-                WHERE status IN ({q_marks})
+                    WHERE status IN ({q_marks})
                   AND cancel_requested = 0
                   AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
                 """,
