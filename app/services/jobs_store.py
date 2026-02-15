@@ -2,16 +2,44 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.auth_store import ApiPrincipal
 
+logger = logging.getLogger(__name__)
+
+
+# ---- status model ----
+
+STATUS_QUEUED = "queued"
+STATUS_RUNNING = "running"
+STATUS_SUCCEEDED = "succeeded"
+STATUS_FAILED = "failed"
+STATUS_CANCELED = "canceled"
+
+ALLOWED_STATUSES: Sequence[str] = (
+    STATUS_QUEUED,
+    STATUS_RUNNING,
+    STATUS_SUCCEEDED,
+    STATUS_FAILED,
+    STATUS_CANCELED,
+)
+
+TERMINAL_STATUSES: Sequence[str] = (
+    STATUS_SUCCEEDED,
+    STATUS_FAILED,
+    STATUS_CANCELED,
+)
+
+
+# ---- utils ----
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -27,6 +55,8 @@ def _json_loads(s: Optional[str]) -> Any:
     try:
         return json.loads(s)
     except Exception:
+        # Do not crash on malformed JSON, but leave a trace in logs for debugging.
+        logger.debug("Failed to json.loads(%r)", s, exc_info=True)
         return None
 
 
@@ -52,8 +82,11 @@ class JobRecord:
 class JobsStore:
     """
     Minimal SQLite job store.
-    - One connection per call (thread-safe enough for FastAPI + background tasks).
-    - Best-effort; designed to be swappable with other backends later.
+
+    Principles:
+    - One connection per call (safe enough for FastAPI + background tasks).
+    - Strict status transitions: terminal states are not overwritten.
+    - cancel_requested is a flag that the runner must respect.
     """
 
     def __init__(self, db_path: str) -> None:
@@ -68,7 +101,7 @@ class JobsStore:
         self._ensure_db_dir()
         conn = sqlite3.connect(self._db_path, timeout=10, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        # Safer defaults for concurrent read/write
+        # Safer defaults for concurrent read/write.
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
@@ -76,12 +109,15 @@ class JobsStore:
 
     def init(self) -> None:
         with self._connect() as conn:
+            # NOTE: The CHECK constraint applies to newly created DBs. If the table already exists,
+            # SQLite cannot easily "add a constraint" without a migration, so this remains best-effort.
             conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS jobs (
                     job_id           TEXT PRIMARY KEY,
                     kind             TEXT NOT NULL,
-                    status           TEXT NOT NULL,
+                    status           TEXT NOT NULL
+                        CHECK (status IN ('{STATUS_QUEUED}','{STATUS_RUNNING}','{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}')),
 
                     created_at       TEXT NOT NULL,
                     updated_at       TEXT NOT NULL,
@@ -92,7 +128,8 @@ class JobsStore:
                     owner_role       TEXT,
                     owner_scopes     TEXT NOT NULL,  -- JSON array
 
-                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0
+                        CHECK (cancel_requested IN (0,1)),
 
                     request_json     TEXT NOT NULL,  -- JSON object
                     progress_json    TEXT,           -- JSON object
@@ -157,7 +194,7 @@ class JobsStore:
                 (
                     job_id,
                     kind,
-                    "queued",
+                    STATUS_QUEUED,
                     now,
                     now,
                     principal.key_id,
@@ -209,75 +246,156 @@ class JobsStore:
             return [self._row_to_record(r) for r in rows]
 
     def mark_running(self, job_id: str) -> None:
+        """
+        queued -> running
+
+        If cancellation was already requested (cancel_requested=1), transition queued -> canceled immediately.
+        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
+            # If the user requested cancellation before the job started, cancel immediately.
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = 'running',
+                SET status = ?,
+                    updated_at = ?,
+                    finished_at = COALESCE(finished_at, ?),
+                    cancel_requested = 1
+                WHERE job_id = ?
+                  AND status = ?
+                  AND cancel_requested = 1;
+                """,
+                (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED),
+            )
+
+            # Normal start
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
                     updated_at = ?,
                     started_at = COALESCE(started_at, ?)
-                WHERE job_id = ? AND status = 'queued';
+                WHERE job_id = ?
+                  AND status = ?
+                  AND cancel_requested = 0;
                 """,
-                (now, now, job_id),
+                (STATUS_RUNNING, now, now, job_id, STATUS_QUEUED),
             )
             conn.commit()
 
     def mark_succeeded(self, job_id: str, result: Dict[str, Any]) -> None:
+        """
+        running -> succeeded
+
+        Does not overwrite terminal states.
+        If cancel_requested=1, prefer transitioning to canceled.
+        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
+            # If cancellation was requested during execution, finish as canceled.
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = 'succeeded',
+                SET status = ?,
                     updated_at = ?,
-                    finished_at = ?,
+                    finished_at = COALESCE(finished_at, ?),
+                    cancel_requested = 1,
+                    result_json = NULL
+                WHERE job_id = ?
+                  AND status = ?
+                  AND cancel_requested = 1;
+                """,
+                (STATUS_CANCELED, now, now, job_id, STATUS_RUNNING),
+            )
+
+            # Mark success only if truly running and not canceled.
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    updated_at = ?,
+                    finished_at = COALESCE(finished_at, ?),
                     result_json = ?,
                     error_json = NULL
-                WHERE job_id = ?;
+                WHERE job_id = ?
+                  AND status = ?
+                  AND cancel_requested = 0;
                 """,
-                (now, now, _json_dumps(result or {}), job_id),
+                (STATUS_SUCCEEDED, now, now, _json_dumps(result or {}), job_id, STATUS_RUNNING),
             )
             conn.commit()
 
     def mark_failed(self, job_id: str, error: Dict[str, Any]) -> None:
+        """
+        queued/running -> failed
+
+        Does not overwrite terminal states.
+        If cancel_requested=1, prefer transitioning to canceled.
+        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
+            # If cancellation was requested, treat it as canceled rather than failed.
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = 'failed',
+                SET status = ?,
                     updated_at = ?,
-                    finished_at = ?,
+                    finished_at = COALESCE(finished_at, ?),
+                    cancel_requested = 1,
+                    result_json = NULL
+                WHERE job_id = ?
+                  AND status IN (?, ?)
+                  AND cancel_requested = 1;
+                """,
+                (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED, STATUS_RUNNING),
+            )
+
+            # Fail only if not terminal and not canceled.
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    updated_at = ?,
+                    finished_at = COALESCE(finished_at, ?),
                     error_json = ?,
                     result_json = NULL
-                WHERE job_id = ?;
+                WHERE job_id = ?
+                  AND status IN (?, ?)
+                  AND cancel_requested = 0;
                 """,
-                (now, now, _json_dumps(error or {}), job_id),
+                (STATUS_FAILED, now, now, _json_dumps(error or {}), job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
             conn.commit()
 
     def mark_canceled(self, job_id: str) -> None:
+        """
+        queued/running -> canceled
+        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = 'canceled',
+                SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    cancel_requested = 1
-                WHERE job_id = ? AND status IN ('queued','running');
+                    cancel_requested = 1,
+                    result_json = NULL
+                WHERE job_id = ?
+                  AND status IN (?, ?);
                 """,
-                (now, now, job_id),
+                (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
             conn.commit()
 
     def set_progress(self, job_id: str, progress: Dict[str, Any]) -> None:
+        """
+        Progress updates are allowed only while the job is not finished.
+        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
@@ -286,13 +404,19 @@ class JobsStore:
                 UPDATE jobs
                 SET updated_at = ?,
                     progress_json = ?
-                WHERE job_id = ?;
+                WHERE job_id = ?
+                  AND status IN (?, ?)
+                  AND finished_at IS NULL;
                 """,
-                (now, _json_dumps(progress or {}), job_id),
+                (now, _json_dumps(progress or {}), job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
             conn.commit()
 
     def request_cancel(self, job_id: str) -> None:
+        """
+        Request cancellation. This does not change the status by itself.
+        The runner must check cancel_requested and terminate accordingly.
+        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
@@ -301,12 +425,12 @@ class JobsStore:
                 UPDATE jobs
                 SET cancel_requested = 1,
                     updated_at = ?
-                WHERE job_id = ?;
+                WHERE job_id = ?
+                  AND status IN (?, ?);
                 """,
-                (now, job_id),
+                (now, job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
             conn.commit()
-
 
     def mark_stale_running_as_failed(
         self,
@@ -315,11 +439,11 @@ class JobsStore:
         reason: str = "stale_after_restart",
     ) -> int:
         """
-        Mark jobs left in 'running' (and optionally 'queued') after process restart.
-        Returns number of affected rows.
+        Mark jobs left in 'running' (and optionally 'queued') after a process restart.
+        Returns the number of affected rows.
 
-        Recommended: call this on startup ONLY for local/in-process runner.
-        For Celery backend you typically do NOT want to mark queued/running as stale.
+        Recommended: call this on startup ONLY for a local/in-process runner.
+        For a Celery backend, you typically do NOT want to mark queued/running jobs as stale.
         """
         self.ensure_init()
         now = _utc_now_iso()
@@ -330,9 +454,9 @@ class JobsStore:
             "at": now,
         }
 
-        statuses = ["running"]
+        statuses: List[str] = [STATUS_RUNNING]
         if include_queued:
-            statuses.append("queued")
+            statuses.append(STATUS_QUEUED)
 
         q_marks = ",".join(["?"] * len(statuses))
 
@@ -341,28 +465,32 @@ class JobsStore:
             cur1 = conn.execute(
                 f"""
                 UPDATE jobs
-                SET status = 'canceled',
+                SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     cancel_requested = 1,
                     result_json = NULL
-                WHERE status IN ({q_marks}) AND cancel_requested = 1;
+                WHERE status IN ({q_marks})
+                  AND cancel_requested = 1
+                  AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
                 """,
-                (now, now, *statuses),
+                (STATUS_CANCELED, now, now, *statuses),
             )
 
             # 2) remaining running/queued -> failed (stale)
             cur2 = conn.execute(
                 f"""
                 UPDATE jobs
-                SET status = 'failed',
+                SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     error_json = ?,
                     result_json = NULL
-                WHERE status IN ({q_marks}) AND cancel_requested = 0;
+                WHERE status IN ({q_marks})
+                  AND cancel_requested = 0
+                  AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
                 """,
-                (now, now, _json_dumps(stale_error), *statuses),
+                (STATUS_FAILED, now, now, _json_dumps(stale_error), *statuses),
             )
 
             conn.commit()
