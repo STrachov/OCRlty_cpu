@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
 
                 # Requeue queued jobs from previous run (best-effort)
                 try:
-                    queued = js.list_queued_jobs(limit=500)
+                    queued = js.list_jobs(status="queued", limit=500)
                     for j in queued:
                         await r.enqueue(j.job_id)
                     if queued:

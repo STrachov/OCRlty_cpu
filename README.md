@@ -169,7 +169,7 @@ pip-compile requirements.in -o requirements.txt
 
 ### Запуск
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8080 --env-file .env
 ```
 ### Smoke test (PowerShell)
 ```powershell
@@ -200,11 +200,14 @@ $body = @{
   request_id   = $RID
 } | ConvertTo-Json -Depth 6
 
+New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
+$bodyFile = ".\tmp\extract_body.json"
+Set-Content -Path $bodyFile -Value $body -Encoding utf8 -NoNewline
 curl.exe -sS -w $CURL_W -X POST "$BASE/v1/extract" `
   -H $AUTH `
   -H "Content-Type: application/json" `
   -H "X-Request-ID: $RID" `
-  --data-binary $body
+  --data-binary "$bodyFile"
 
 # ====== 3) /v1/batch_extract_upload (multipart) ======
 # (надёжнее, чем server-side batch_extract: не требует датасета на сервере)
@@ -275,6 +278,96 @@ curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/debug/artifacts/$RID/raw"
 
 # Скачать backup tar.gz:
 curl.exe -sS -w $CURL_W -H $AUTH -o artifacts_backup.tar.gz "$BASE/v1/debug/artifacts/backup.tar.gz"
+
+# ============================
+# ASYNC (202 + polling)
+# ============================
+
+# ====== 7) ASYNC: /v1/extract_async ======
+$body_async = @{
+  task_id      = "receipt_fields_v1"
+  image_base64 = $IMG_B64
+  mime_type    = "image/png"
+  request_id   = ("async_" + [guid]::NewGuid().ToString("N"))
+} | ConvertTo-Json -Depth 6
+
+$job_create = curl.exe -sS -X POST "$BASE/v1/extract_async" `
+  -H $AUTH -H "Content-Type: application/json" `
+  --data-binary $body_async
+
+$job_create
+$job_id = ($job_create | ConvertFrom-Json).job_id
+"JOB_ID=$job_id"
+
+# polling (status + progress):
+while ($true) {
+  $j = curl.exe -sS -H $AUTH "$BASE/v1/jobs/$job_id" | ConvertFrom-Json
+  $progress = if ($null -ne $j.progress) { $j.progress | ConvertTo-Json -Compress } else { "null" }
+  "{0} status={1} progress={2}" -f (Get-Date -Format "HH:mm:ss"), $j.status, $progress
+
+  if ($j.status -in @("succeeded","failed","canceled")) {
+    $j | ConvertTo-Json -Depth 30
+    break
+  }
+  Start-Sleep -Seconds 1
+}
+
+# ====== 8) ASYNC: /v1/batch_extract_async (server-side dir под DATA_ROOT) ======
+$body_batch_async = @{
+  task_id      = "receipt_fields_v1"
+  images_dir   = "/workspace/src/data"     # должен быть под DATA_ROOT
+  glob         = "**/*"
+  concurrency  = 2
+  run_id       = ("async_dir_" + (Get-Date -Format "yyyyMMddTHHmmss"))
+  limit        = 5
+} | ConvertTo-Json -Depth 6
+New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
+$bodyFile = ".\tmp\extract_body.json"
+
+# важно: без добавления лишнего перевода строки в конце
+Set-Content -Path $bodyFile -Value $bodyJson -Encoding utf8 -NoNewline
+
+curl.exe -sS -w $CURL_W -X POST "$BASE/v1/extract" `
+  -H $AUTH -H "Content-Type: application/json" -H "X-Request-ID: $RID" `
+  --data-binary "@$bodyFile"
+$job_create = curl.exe -sS -X POST "$BASE/v1/batch_extract_async" `
+  -H $AUTH -H "Content-Type: application/json" `
+  --data-binary $body_batch_async
+
+$job_id = ($job_create | ConvertFrom-Json).job_id
+"JOB_ID=$job_id"
+curl.exe -sS -H $AUTH "$BASE/v1/jobs/$job_id"
+
+# ====== 9) ASYNC: /v1/batch_extract_upload_async (multipart -> input_ref -> job) ======
+$job_create = curl.exe -sS -X POST "$BASE/v1/batch_extract_upload_async" `
+  -H $AUTH `
+  -F "task_id=receipt_fields_v1" `
+  -F "concurrency=2" `
+  -F "run_id=async_up_$(Get-Date -Format yyyyMMddTHHmmss)" `
+  -F "files=@$IMG;type=image/png"
+
+$job_create
+$job_id = ($job_create | ConvertFrom-Json).job_id
+"JOB_ID=$job_id"
+
+# ====== 10) ASYNC: /v1/batch_extract_rerun_async ======
+$body_rerun_async = @{
+  task_id      = "receipt_fields_v1"
+  run_id       = $RUN_ID
+  concurrency  = 2
+  max_days     = 90
+  new_run_id   = ("async_rerun_" + (Get-Date -Format "yyyyMMddTHHmmss"))
+} | ConvertTo-Json -Depth 6
+
+$job_create = curl.exe -sS -X POST "$BASE/v1/batch_extract_rerun_async" `
+  -H $AUTH -H "Content-Type: application/json" `
+  --data-binary $body_rerun_async
+
+$job_id = ($job_create | ConvertFrom-Json).job_id
+"JOB_ID=$job_id"
+
+# ====== 11) CANCEL (best-effort) ======
+curl.exe -sS -X POST -H $AUTH "$BASE/v1/jobs/$job_id/cancel"
 
 ```
 ---

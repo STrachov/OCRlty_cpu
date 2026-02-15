@@ -470,7 +470,7 @@ class JobsStore:
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    cancel_requested = 1,
+                    cancel_requested = 1
                     WHERE job_id = ?
                   AND status IN (?, ?);
                 """,
@@ -554,7 +554,7 @@ class JobsStore:
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    cancel_requested = 1,
+                    cancel_requested = 1
                     WHERE status IN ({q_marks})
                   AND cancel_requested = 1
                   AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
@@ -569,7 +569,7 @@ class JobsStore:
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    error_json = ?,
+                    error_json = ?
                     WHERE status IN ({q_marks})
                   AND cancel_requested = 0
                   AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
