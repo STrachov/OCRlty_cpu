@@ -147,6 +147,7 @@ async def request_id_ctx_mw(request: Request, call_next):
 app.include_router(core_router)
 app.include_router(extract_router)
 app.include_router(debug_router)
+app.include_router(jobs_router)
 
 
 @app.get("/health")

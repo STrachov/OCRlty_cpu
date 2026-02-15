@@ -110,6 +110,7 @@ class BatchExtractRequest(BaseModel):
     task_id: str = Field(..., description="Task registry id.")
     images_dir: str = Field(default=DEFAULT_IMAGES_DIR, description="Directory under DATA_ROOT containing images.")
     glob: str = Field(default="**/*", description="Glob for images_dir scan.")
+    exts: List[str] = Field(default_factory=lambda: ["png", "jpg", "jpeg", "webp"], description="Allowed file extensions (without dot).")
     concurrency: int = Field(default=4, ge=1, le=64)
     run_id: Optional[str] = Field(default=None, description="Optional run id. If omitted - generated.")
     gt_path: Optional[str] = Field(default=None, description="Optional GT JSON path to auto-run eval (debug only).")
@@ -693,16 +694,29 @@ def _guess_mime_type(name: str) -> str:
     return mt or "application/octet-stream"
 
 
-def _list_image_files(root: Path, pattern: str) -> List[str]:
+def _list_image_files(root: Path, pattern: str, exts: Optional[List[str]] = None) -> List[str]:
     if "**" in pattern:
         files = sorted([str(p) for p in root.glob(pattern) if p.is_file()])
     else:
         files = sorted([str(p) for p in root.rglob(pattern) if p.is_file()])
-    # basic image-ish filter
-    out = []
+
+    default_allowed = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+    allowed = set(default_allowed)
+
+    if exts:
+        allowed = set()
+        for e in exts:
+            s = str(e or "").strip().lower()
+            if not s:
+                continue
+            if not s.startswith("."):
+                s = "." + s
+            allowed.add(s)
+
+    out: List[str] = []
     for f in files:
         ext = Path(f).suffix.lower()
-        if ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
+        if ext in allowed:
             out.append(f)
     return out
 
@@ -903,7 +917,7 @@ async def batch_extract(
     _get_task(req.task_id)  # validate
 
     images_dir = _validate_under_data_root(Path(req.images_dir))
-    files = _list_image_files(images_dir, req.glob)
+    files = _list_image_files(images_dir, req.glob, req.exts)
     if not files:
         raise HTTPException(status_code=404, detail="No image files found in images_dir with given glob.")
 
