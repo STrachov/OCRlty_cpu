@@ -73,13 +73,25 @@ class JobRecord:
     owner_role: Optional[str]
     owner_scopes: List[str]
     cancel_requested: bool
+
     request: Dict[str, Any]
     progress: Optional[Dict[str, Any]]
+
+    # Thin result:
+    result_ref: Optional[str]
+    result_meta: Optional[Dict[str, Any]]
+    result_bytes: Optional[int]
+    result_sha256: Optional[str]
+
+    # Backward compatible alias: points to result_meta (never the full "thick" JSON).
     result: Optional[Dict[str, Any]]
+
+    error_ref: Optional[str]
     error: Optional[Dict[str, Any]]
 
 
 class JobsStore:
+
     """
     Minimal SQLite job store.
 
@@ -131,13 +143,34 @@ class JobsStore:
                     cancel_requested INTEGER NOT NULL DEFAULT 0
                         CHECK (cancel_requested IN (0,1)),
 
-                    request_json     TEXT NOT NULL,  -- JSON object
-                    progress_json    TEXT,           -- JSON object
-                    result_json      TEXT,           -- JSON object
-                    error_json       TEXT            -- JSON object
+                    request_json       TEXT NOT NULL,  -- JSON object (job input / params)
+                    progress_json      TEXT,           -- JSON object (small progress marker)
+                    result_json        TEXT,           -- LEGACY (do not use; kept for older DBs)
+                    error_json         TEXT,           -- JSON object (small error summary)
+
+                    -- Thin results: keep only pointer + summary in JobsStore.
+                    result_ref         TEXT,           -- artifact key/path with full result JSON
+                    result_meta_json   TEXT,           -- JSON object (small summary)
+                    result_bytes       INTEGER,
+                    result_sha256      TEXT,
+
+                    error_ref          TEXT            -- artifact key/path with full error details
                 );
                 """
             )
+
+            # Best-effort migrations for existing DBs (SQLite has no ALTER COLUMN / constraints).
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs);").fetchall()}
+
+            def _add(col: str, ddl: str) -> None:
+                if col not in cols:
+                    conn.execute(ddl)
+
+            _add("result_ref", "ALTER TABLE jobs ADD COLUMN result_ref TEXT;")
+            _add("result_meta_json", "ALTER TABLE jobs ADD COLUMN result_meta_json TEXT;")
+            _add("result_bytes", "ALTER TABLE jobs ADD COLUMN result_bytes INTEGER;")
+            _add("result_sha256", "ALTER TABLE jobs ADD COLUMN result_sha256 TEXT;")
+            _add("error_ref", "ALTER TABLE jobs ADD COLUMN error_ref TEXT;")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner_key_id);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);")
@@ -155,6 +188,20 @@ class JobsStore:
     # ---- helpers ----
 
     def _row_to_record(self, r: sqlite3.Row) -> JobRecord:
+        keys = set(r.keys())
+        result_ref = str(r["result_ref"]) if ("result_ref" in keys and r["result_ref"]) else None
+        error_ref = str(r["error_ref"]) if ("error_ref" in keys and r["error_ref"]) else None
+
+        # Prefer new thin meta column; fall back to legacy result_json for older DBs.
+        result_meta = None
+        if "result_meta_json" in keys and r["result_meta_json"]:
+            result_meta = _json_loads(r["result_meta_json"])
+        elif "result_json" in keys and r["result_json"]:
+            result_meta = _json_loads(r["result_json"])
+
+        result_bytes = int(r["result_bytes"]) if ("result_bytes" in keys and r["result_bytes"] is not None) else None
+        result_sha256 = str(r["result_sha256"]) if ("result_sha256" in keys and r["result_sha256"]) else None
+
         return JobRecord(
             job_id=str(r["job_id"]),
             kind=str(r["kind"]),
@@ -169,7 +216,12 @@ class JobsStore:
             cancel_requested=bool(int(r["cancel_requested"] or 0)),
             request=_json_loads(r["request_json"]) or {},
             progress=_json_loads(r["progress_json"]),
-            result=_json_loads(r["result_json"]),
+            result_ref=result_ref,
+            result_meta=result_meta,
+            result_bytes=result_bytes,
+            result_sha256=result_sha256,
+            result=result_meta,
+            error_ref=error_ref,
             error=_json_loads(r["error_json"]),
         )
 
@@ -284,12 +336,20 @@ class JobsStore:
             )
             conn.commit()
 
-    def mark_succeeded(self, job_id: str, result: Dict[str, Any]) -> None:
-        """
-        running -> succeeded
+    def mark_succeeded(
+        self,
+        job_id: str,
+        *,
+        result_ref: str,
+        result_meta: Dict[str, Any],
+        result_bytes: Optional[int] = None,
+        result_sha256: Optional[str] = None,
+    ) -> None:
+        """running -> succeeded (thin result)
 
-        Does not overwrite terminal states.
-        If cancel_requested=1, prefer transitioning to canceled.
+        Stores only:
+          - result_ref (artifact key/path with full JSON)
+          - result_meta_json (small summary)
         """
         self.ensure_init()
         now = _utc_now_iso()
@@ -302,7 +362,13 @@ class JobsStore:
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     cancel_requested = 1,
-                    result_json = NULL
+                    result_json = NULL,
+                    result_ref = NULL,
+                    result_meta_json = NULL,
+                    result_bytes = NULL,
+                    result_sha256 = NULL,
+                    error_json = NULL,
+                    error_ref = NULL
                 WHERE job_id = ?
                   AND status = ?
                   AND cancel_requested = 1;
@@ -317,17 +383,32 @@ class JobsStore:
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    result_json = ?,
-                    error_json = NULL
+                    result_json = NULL,
+                    result_ref = ?,
+                    result_meta_json = ?,
+                    result_bytes = ?,
+                    result_sha256 = ?,
+                    error_json = NULL,
+                    error_ref = NULL
                 WHERE job_id = ?
                   AND status = ?
                   AND cancel_requested = 0;
                 """,
-                (STATUS_SUCCEEDED, now, now, _json_dumps(result or {}), job_id, STATUS_RUNNING),
+                (
+                    STATUS_SUCCEEDED,
+                    now,
+                    now,
+                    str(result_ref),
+                    _json_dumps(result_meta or {}),
+                    int(result_bytes) if result_bytes is not None else None,
+                    str(result_sha256) if result_sha256 else None,
+                    job_id,
+                    STATUS_RUNNING,
+                ),
             )
             conn.commit()
 
-    def mark_failed(self, job_id: str, error: Dict[str, Any]) -> None:
+    def mark_failed(self, job_id: str, error: Dict[str, Any], *, error_ref: Optional[str] = None) -> None:
         """
         queued/running -> failed
 
@@ -345,28 +426,48 @@ class JobsStore:
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
                     cancel_requested = 1,
-                    result_json = NULL
+                    result_json = NULL,
+                    result_ref = NULL,
+                    result_meta_json = NULL,
+                    result_bytes = NULL,
+                    result_sha256 = NULL,
+                    error_json = NULL,
+                    error_ref = NULL
                 WHERE job_id = ?
-                  AND status IN (?, ?)
+                  AND status IN (?,?)
                   AND cancel_requested = 1;
                 """,
                 (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
 
-            # Fail only if not terminal and not canceled.
+            # Mark failure only if not canceled and not already terminal.
             conn.execute(
                 """
                 UPDATE jobs
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
+                    result_json = NULL,
+                    result_ref = NULL,
+                    result_meta_json = NULL,
+                    result_bytes = NULL,
+                    result_sha256 = NULL,
                     error_json = ?,
-                    result_json = NULL
+                    error_ref = ?
                 WHERE job_id = ?
-                  AND status IN (?, ?)
+                  AND status IN (?,?)
                   AND cancel_requested = 0;
                 """,
-                (STATUS_FAILED, now, now, _json_dumps(error or {}), job_id, STATUS_QUEUED, STATUS_RUNNING),
+                (
+                    STATUS_FAILED,
+                    now,
+                    now,
+                    _json_dumps(error or {}),
+                    str(error_ref) if error_ref else None,
+                    job_id,
+                    STATUS_QUEUED,
+                    STATUS_RUNNING,
+                ),
             )
             conn.commit()
 

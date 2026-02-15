@@ -104,6 +104,20 @@ def _eval_artifact_ref(eval_id: str, *, day: Optional[str] = None) -> Union[str,
     return (ARTIFACTS_DIR / "evals" / d / f"{eval_id}.json").resolve()
 
 
+def _job_result_artifact_ref(job_id: str, *, day: Optional[str] = None) -> Union[str, Path]:
+    d = day or _utc_day()
+    if s3_enabled():
+        return _artifact_key("jobs", d, f"{job_id}.json")
+    return (ARTIFACTS_DIR / "jobs" / d / f"{job_id}.json").resolve()
+
+
+def _job_error_artifact_ref(job_id: str, *, day: Optional[str] = None) -> Union[str, Path]:
+    d = day or _utc_day()
+    if s3_enabled():
+        return _artifact_key("job_errors", d, f"{job_id}.json")
+    return (ARTIFACTS_DIR / "job_errors" / d / f"{job_id}.json").resolve()
+
+
 def to_artifact_rel(ref: Union[str, Path]) -> str:
     """
     Convert full reference into artifact_rel that can be stored in responses/artifacts.
@@ -236,6 +250,31 @@ def save_eval_artifact(payload: Dict[str, Any], owner_key_id : Optional[str] = N
         _write_json_file(Path(ref), payload)
     _index_upsert("eval", eval_id, ref, owner_key_id)
     return ref
+
+
+def save_job_result_artifact(job_id: str, payload: Dict[str, Any], owner_key_id : Optional[str] = None) -> Union[str, Path]:
+    """Store full (potentially large) job result JSON under artifacts and return ref."""
+    _ensure_artifacts_dir()
+    ref = _job_result_artifact_ref(job_id)
+    if s3_enabled():
+        s3_put_json(str(ref), payload)
+    else:
+        _write_json_file(Path(ref), payload)
+    _index_upsert("job_result", job_id, ref, owner_key_id)
+    return ref
+
+
+def save_job_error_artifact(job_id: str, payload: Dict[str, Any], owner_key_id : Optional[str] = None) -> Union[str, Path]:
+    """Store job error details (including traceback) under artifacts and return ref."""
+    _ensure_artifacts_dir()
+    ref = _job_error_artifact_ref(job_id)
+    if s3_enabled():
+        s3_put_json(str(ref), payload)
+    else:
+        _write_json_file(Path(ref), payload)
+    _index_upsert("job_error", job_id, ref, owner_key_id)
+    return ref
+
 
 
 def read_artifact_json(ref: Union[str, Path]) -> Dict[str, Any]:

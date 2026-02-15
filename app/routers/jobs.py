@@ -10,6 +10,7 @@ from app.auth import require_scopes
 from app.auth_store import ApiPrincipal
 from app.services.jobs_store import JobsStore, JobRecord
 from app.services.jobs_runner import BaseJobRunner
+from app.services.artifacts import read_artifact_json
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
 
@@ -29,6 +30,7 @@ def _runner(request: Request) -> BaseJobRunner:
 
 
 def _job_to_dict(j: JobRecord) -> Dict[str, Any]:
+    # NOTE: "result" is intentionally *thin* (summary only). Full result JSON lives in artifacts.
     return {
         "job_id": j.job_id,
         "kind": j.kind,
@@ -40,9 +42,19 @@ def _job_to_dict(j: JobRecord) -> Dict[str, Any]:
         "owner_key_id": j.owner_key_id,
         "owner_role": j.owner_role,
         "cancel_requested": bool(j.cancel_requested),
+
         "request": j.request,
         "progress": j.progress,
-        "result": j.result,
+
+        "result_ref": j.result_ref,
+        "result_meta": j.result_meta,
+        "result_bytes": j.result_bytes,
+        "result_sha256": j.result_sha256,
+
+        # Backward-compatible alias:
+        "result": j.result_meta,
+
+        "error_ref": j.error_ref,
         "error": j.error,
     }
 
@@ -170,6 +182,44 @@ async def get_job(
         raise HTTPException(status_code=404, detail="Job not found.")
     _enforce_owner_or_admin(principal, job)
     return _job_to_dict(job)
+
+
+@router.get(
+    "/{job_id}/result",
+    dependencies=[Depends(require_scopes(["extract:run"]))],
+)
+async def get_job_result(
+    job_id: str,
+    request: Request,
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+):
+    store = _store(request)
+    job = store.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    _enforce_owner_or_admin(principal, job)
+    if not job.result_ref:
+        raise HTTPException(status_code=404, detail="Job result is not available.")
+    return read_artifact_json(job.result_ref)
+
+
+@router.get(
+    "/{job_id}/error",
+    dependencies=[Depends(require_scopes(["extract:run"]))],
+)
+async def get_job_error_details(
+    job_id: str,
+    request: Request,
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+):
+    store = _store(request)
+    job = store.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    _enforce_owner_or_admin(principal, job)
+    if not job.error_ref:
+        raise HTTPException(status_code=404, detail="Job error details are not available.")
+    return read_artifact_json(job.error_ref)
 
 
 @router.post(
