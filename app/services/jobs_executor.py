@@ -41,7 +41,7 @@ def _get_vllm_client() -> VLLMClient:
 def _principal_from_owner(owner: Optional[Dict[str, Any]]) -> ApiPrincipal:
     if not owner:
         # best-effort fallback
-        return ApiPrincipal(api_key_id=-1, key_id="system", role="system", scopes={"extract:run"}, is_active=True)
+        return ApiPrincipal(api_key_id=-1, key_id="system", role="system", scopes={"extract:run"})
 
     scopes = owner.get("scopes") or []
     if isinstance(scopes, str):
@@ -51,7 +51,6 @@ def _principal_from_owner(owner: Optional[Dict[str, Any]]) -> ApiPrincipal:
         key_id=str(owner.get("key_id") or "unknown"),
         role=str(owner.get("role") or "user"),
         scopes=set(scopes),
-        is_active=True,
     )
 
 

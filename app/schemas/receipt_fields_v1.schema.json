@@ -78,5 +78,17 @@
     "cash",
     "card",
     "change"
-  ]
+  ],
+  "examples": [
+  {
+    "total": null,
+    "subtotal": null,
+    "tax": null,
+    "service": null,
+    "discount": null,
+    "cash": null,
+    "card": null,
+    "change": null
+  }
+]
 }

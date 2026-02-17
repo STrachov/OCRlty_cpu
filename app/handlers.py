@@ -171,7 +171,7 @@ def _log_event(level: int, event: str, **fields: Any) -> None:
 # Tasks registry
 # ---------------------------
 TASK_SPECS = [
-    {"task_id": "receipt_fields_v1", "prompt_file": "receipt_fields_v1.txt", "schema_file": "receipt_fields_v1.json"},
+    {"task_id": "receipt_fields_v1", "prompt_file": "receipt_fields_v1.txt", "schema_file": "receipt_fields_v1.schema.json"},
 ]
 _TASKS: Dict[str, Dict[str, Any]] = {}
 _TASK_LOAD_ERRORS: List[str] = []

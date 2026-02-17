@@ -567,8 +567,8 @@ async def extract(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-
-            if getattr(settings, "MOCK_VLLM", False):
+            if str(settings.INFERENCE_BACKEND).lower() == "mock":
+            #if getattr(settings, "MOCK_VLLM", False):
                 resp = _mock_chat_completions(schema_json)
             else:
                 resp = await _vllm_call_with_retries(
