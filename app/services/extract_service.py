@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 import httpx
 from fastapi import HTTPException, UploadFile
@@ -567,6 +567,7 @@ async def extract(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+
             if str(settings.INFERENCE_BACKEND).lower() == "mock":
             #if getattr(settings, "MOCK_VLLM", False):
                 resp = _mock_chat_completions(schema_json)
@@ -823,6 +824,7 @@ async def _run_batch_extract_core(
     gt_record_key: Optional[str] = None,
     include_worst: bool = False,
     limit: Optional[int] = None,
+    progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> BatchExtractResponse:
     # Optional limit for huge batches
     if limit is not None:
@@ -833,6 +835,44 @@ async def _run_batch_extract_core(
 
     ok_count = 0
     err_count = 0
+
+    # Optional progress callback (used by async jobs). It should be cheap and must not raise.
+    progress_every_n = max(1, int(getattr(settings, "JOBS_PROGRESS_EVERY_N", 1) or 1))
+    progress_min_seconds = float(getattr(settings, "JOBS_PROGRESS_MIN_SECONDS", 0.0) or 0.0)
+    _p_lock = asyncio.Lock()
+    _p_last_t = 0.0
+    _p_last_done = -1
+
+    async def _emit_progress(*, stage: str, current: Optional[str] = None, force: bool = False) -> None:
+        nonlocal _p_last_t, _p_last_done
+        if progress_cb is None:
+            return
+        async with _p_lock:
+            done = ok_count + err_count
+            total = len(inputs)
+            now = time.monotonic()
+            if not force:
+                if progress_every_n > 1 and (done % progress_every_n) != 0 and done != total:
+                    return
+                if progress_min_seconds > 0 and (now - _p_last_t) < progress_min_seconds and done != total:
+                    return
+                if done == _p_last_done and done != total:
+                    return
+            payload: Dict[str, Any] = {
+                "stage": stage,
+                "total": total,
+                "done": done,
+                "ok": ok_count,
+                "err": err_count,
+            }
+            if current:
+                payload["current"] = current
+            try:
+                progress_cb(payload)
+            except Exception:
+                pass
+            _p_last_t = now
+            _p_last_done = done
 
     async def one(inp: _BatchInput) -> None:
         nonlocal ok_count, err_count
@@ -866,6 +906,7 @@ async def _run_batch_extract_core(
                     ok_count += 1
                 else:
                     err_count += 1
+                await _emit_progress(stage="extracting", current=inp.file)
             except Exception as e:
                 err_count += 1
                 eh = await asyncio.to_thread(_try_load_error_history_for_request, request_id)
@@ -881,8 +922,11 @@ async def _run_batch_extract_core(
                         error_history=eh,
                     )
                 )
+                await _emit_progress(stage="extracting", current=inp.file)
             finally:
                 _reset_request_id(token)
+
+    await _emit_progress(stage="extracting", force=True)
 
     await asyncio.gather(*(one(i) for i in inputs))
 
@@ -901,7 +945,15 @@ async def _run_batch_extract_core(
         "auth": {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))},
     }
 
-    batch_path = await asyncio.to_thread(save_batch_artifact, run_id, batch_payload, principal.key_id)
+    await _emit_progress(stage="finalizing", force=True)
+
+    try:
+        batch_path = await asyncio.to_thread(save_batch_artifact, run_id, batch_payload, principal.key_id)
+    except Exception:
+        await _emit_progress(stage="failed", force=True)
+        raise
+
+    await _emit_progress(stage="succeeded", force=True)
 
     eval_info: Optional[Dict[str, Any]] = None
     if gt_path:
@@ -940,6 +992,7 @@ async def batch_extract(
     *,
     principal: ApiPrincipal,
     vllm_client: VLLMClient,
+    progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> BatchExtractResponse:
     _get_task(req.task_id)  # validate
 
@@ -967,6 +1020,7 @@ async def batch_extract(
         gt_record_key=req.gt_record_key,
         include_worst=req.include_worst,
         limit=req.limit,
+        progress_cb=progress_cb,
     )
 
     # fill response fields
@@ -980,6 +1034,7 @@ async def batch_extract_inputs(
     *,
     principal: ApiPrincipal,
     vllm_client: VLLMClient,
+    progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> BatchExtractResponse:
     _get_task(req.task_id)  # validate
     run_id2 = req.run_id or _default_run_id()
@@ -1015,6 +1070,7 @@ async def batch_extract_inputs(
         gt_record_key=req.gt_record_key,
         include_worst=req.include_worst,
         limit=req.limit,
+        progress_cb=progress_cb,
     )
     resp.images_dir = "(upload_refs)"
     resp.glob = "(upload_refs)"
@@ -1074,6 +1130,7 @@ async def batch_extract_rerun(
     *,
     principal: ApiPrincipal,
     vllm_client: VLLMClient,
+    progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> BatchExtractResponse:
     _get_task(req.task_id)  # validate
 
@@ -1121,6 +1178,7 @@ async def batch_extract_rerun(
         gt_record_key=req.gt_record_key,
         include_worst=req.include_worst,
         limit=req.limit,
+        progress_cb=progress_cb,
     )
     resp.images_dir = "(rerun)"
     resp.glob = "(rerun)"

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
 
 import httpx
 
@@ -87,7 +87,13 @@ def _map_batch_rerun_legacy(req: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def execute_job(kind: str, request: Dict[str, Any], owner: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def execute_job(
+    kind: str,
+    request: Dict[str, Any],
+    owner: Optional[Dict[str, Any]] = None,
+    *,
+    progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
     """Execute a job in-process.
 
     Kinds supported:
@@ -108,25 +114,25 @@ async def execute_job(kind: str, request: Dict[str, Any], owner: Optional[Dict[s
 
     if kind == "batch_extract":
         req = extract_service.BatchExtractRequest(**(request or {}))
-        resp = await extract_service.batch_extract(req, principal=principal, vllm_client=vllm)
+        resp = await extract_service.batch_extract(req, principal=principal, vllm_client=vllm, progress_cb=progress_cb)
         return resp.model_dump()
 
     if kind == "batch_extract_inputs":
         req = extract_service.BatchExtractInputsRequest(**(request or {}))
-        resp = await extract_service.batch_extract_inputs(req, principal=principal, vllm_client=vllm)
+        resp = await extract_service.batch_extract_inputs(req, principal=principal, vllm_client=vllm, progress_cb=progress_cb)
         return resp.model_dump()
 
     if kind == "batch_extract_dir":
         mapped = _map_batch_extract_dir_legacy(request or {})
         req = extract_service.BatchExtractRequest(**mapped)
-        resp = await extract_service.batch_extract(req, principal=principal, vllm_client=vllm)
+        resp = await extract_service.batch_extract(req, principal=principal, vllm_client=vllm, progress_cb=progress_cb)
         return resp.model_dump()
 
     if kind == "batch_extract_rerun":
         # support both new and legacy shape
         mapped = _map_batch_rerun_legacy(request or {}) if ("source_run_id" in (request or {})) else (request or {})
         req = extract_service.BatchRerunRequest(**mapped)
-        resp = await extract_service.batch_extract_rerun(req, principal=principal, vllm_client=vllm)
+        resp = await extract_service.batch_extract_rerun(req, principal=principal, vllm_client=vllm, progress_cb=progress_cb)
         return resp.model_dump()
 
     raise ValueError(f"Unknown job kind: {kind!r}")

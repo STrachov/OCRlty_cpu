@@ -283,11 +283,19 @@ def get_vllm_client(request: Request) -> VLLMClient:
 
 
 # ---------------------------
-# Auth: who am I
+# Core endpoints
 # ---------------------------
 async def me(principal: ApiPrincipal = Depends(require_scopes([]))):
     return {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))}
 
+async def health():
+    return {
+        "ok": True,
+        "auth_enabled": bool(settings.AUTH_ENABLED),
+        "debug_mode": bool(settings.DEBUG_MODE),
+        "inference_backend": settings.INFERENCE_BACKEND,
+        "model": settings.VLLM_MODEL,
+    }
 
 # ---------------------------
 # Eval: batch vs GT (debug tool)

@@ -121,16 +121,30 @@ class LocalJobRunner(BaseJobRunner):
                 "scopes": job.owner_scopes,
             }
 
+            # Progress reporting (used mainly for long-running batch_* async jobs)
+            def _progress_cb(p: Dict[str, Any]) -> None:
+                try:
+                    self._store.set_progress(job_id, p or {})
+                except Exception:
+                    pass
+
             # Minimal progress marker
             self._store.set_progress(job_id, {"stage": "started"})
 
-            result = await execute_job(kind=job.kind, request=job.request, owner=owner)
+            result = await execute_job(kind=job.kind, request=job.request, owner=owner, progress_cb=_progress_cb)
             if not isinstance(result, dict):
                 result = {"value": result}
 
             # If cancel was requested during run: mark canceled (best-effort)
             job2 = self._store.get_job(job_id)
             if job2 and job2.cancel_requested:
+                try:
+                    cur = job2.progress if (isinstance(job2.progress, dict)) else {}
+                    cur2 = dict(cur)
+                    cur2["stage"] = "canceled"
+                    self._store.set_progress(job_id, cur2)
+                except Exception:
+                    pass
                 self._store.mark_canceled(job_id)
                 return
 
@@ -141,6 +155,15 @@ class LocalJobRunner(BaseJobRunner):
             # Deterministic sha/bytes (same formatting used for artifacts).
             body = (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
             sha = hashlib.sha256(body).hexdigest()
+            # Preserve any rich progress (e.g., batch counters) and only set final stage.
+            try:
+                j3 = self._store.get_job(job_id)
+                cur = j3.progress if (j3 and isinstance(j3.progress, dict)) else {}
+                cur2 = dict(cur)
+                cur2["stage"] = "succeeded"
+                self._store.set_progress(job_id, cur2)
+            except Exception:
+                pass
             self._store.mark_succeeded(job_id, result_ref=str(result_ref), result_meta=meta, result_bytes=len(body), result_sha256=sha)
 
         except Exception as e:
@@ -161,6 +184,14 @@ class LocalJobRunner(BaseJobRunner):
             except Exception:
                 error_ref = None
 
+            try:
+                j3 = self._store.get_job(job_id)
+                cur = j3.progress if (j3 and isinstance(j3.progress, dict)) else {}
+                cur2 = dict(cur)
+                cur2["stage"] = "failed"
+                self._store.set_progress(job_id, cur2)
+            except Exception:
+                pass
             self._store.mark_failed(job_id, err, error_ref=str(error_ref) if error_ref else None)
 
         finally:

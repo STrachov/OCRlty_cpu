@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     JOBS_DB_PATH: str = "/data/db/jobs.db"
     JOBS_MAX_CONCURRENCY: int = 2
 
+    # Progress reporting for long-running jobs (batch_* async).
+    # - JOBS_PROGRESS_EVERY_N=1 is handy for debugging (update after every item).
+    # - In production set higher values (e.g. 10/25) to reduce SQLite writes.
+    JOBS_PROGRESS_EVERY_N: int = 1
+    JOBS_PROGRESS_MIN_SECONDS: float = 0.0
+
     # --- Celery (only if JOBS_BACKEND=celery) ---
     CELERY_BROKER_URL: str = "redis://redis:6379/0"
     CELERY_RESULT_BACKEND: str | None = None

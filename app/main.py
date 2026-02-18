@@ -148,14 +148,3 @@ app.include_router(core_router)
 app.include_router(extract_router)
 app.include_router(debug_router)
 app.include_router(jobs_router)
-
-
-@app.get("/health")
-async def health():
-    return {
-        "ok": True,
-        "auth_enabled": bool(settings.AUTH_ENABLED),
-        "debug_mode": bool(settings.DEBUG_MODE),
-        "inference_backend": settings.INFERENCE_BACKEND,
-        "model": settings.VLLM_MODEL,
-    }
