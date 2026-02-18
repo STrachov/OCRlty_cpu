@@ -142,6 +142,9 @@ class BatchItemResult(BaseModel):
     input_ref: Optional[str] = None
     artifact_rel: Optional[str] = None
     ok: bool = True
+    parsed: Optional[Dict[str, Any]] = None
+    schema_valid: Optional[bool] = None
+    schema_errors: Optional[List[Dict[str, Any]]] = None
     error: Optional[Dict[str, Any]] = None
     error_history: Optional[List[Dict[str, Any]]] = None
 
@@ -898,6 +901,9 @@ async def _run_batch_extract_core(
                         input_ref=inp.input_ref,
                         artifact_rel=resp.artifact_path,
                         ok=resp.error is None,
+                        parsed=resp.parsed,     
+                        schema_valid=resp.schema_valid,     
+                        schema_errors=resp.schema_errors,    
                         error=resp.error,
                         error_history=resp.error_history,
                     )
@@ -918,6 +924,9 @@ async def _run_batch_extract_core(
                         input_ref=inp.input_ref,
                         artifact_rel=str(art_ref) if art_ref else None,
                         ok=False,
+                        parsed=None,
+                        schema_valid=None,
+                        schema_errors=None,
                         error=_mk_err("batch_item_failed", str(e)),
                         error_history=eh,
                     )

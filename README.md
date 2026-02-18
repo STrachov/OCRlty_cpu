@@ -194,6 +194,9 @@ curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/me"
 
 # ====== 1) SYNC: /v1/extract (локальный файл -> base64) ======
 $IMG = ".\data\batch_smoke\images\cord_0000.jpg"
+$IMG2 = ".\data\batch_smoke\images\cord_0001.jpg"
+$IMG3 = ".\data\batch_smoke\images\cord_0002.jpg"
+
 $IMG_B64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($IMG))
 
 $PREFIX = "smoke_mock_"   # например smoke_mock_ / smoke_vllm_
@@ -217,7 +220,7 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/extract" `
 
 # ====== 2) SYNC: /v1/batch_extract_upload (multipart) ======
 $RUN_ID = $PREFIX + (Get-Date -Format "yyyyMMddTHHmmss")
-$IMG2 = ".\data\batch_smoke\images\cord_0001.jpg"
+
 
 curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
   -H $AUTH `
@@ -226,7 +229,8 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
   -F "concurrency=2" `
   -F "run_id=$RUN_ID" `
   -F "files=@$IMG;type=image/jpeg" `
-  -F "files=@$IMG2;type=image/jpeg"
+  -F "files=@$IMG2;type=image/jpeg" `
+  -F "files=@$IMG3;type=image/jpeg"
 
 # ====== 3) SYNC: /v1/batch_extract_rerun (по сохранённым inputs) ======
 $body_rerun = @{
@@ -305,7 +309,8 @@ $job_create = curl.exe -sS -X POST "$BASE/v1/batch_extract_upload_async" `
   -F "task_id=receipt_fields_v1" `
   -F "concurrency=2" `
   -F "run_id=async_up_$(Get-Date -Format yyyyMMddTHHmmss)" `
-  -F "files=@$IMG;type=image/jpeg"
+  -F "files=@$IMG;type=image/jpeg" `
+  -F "files=@$IMG2;type=image/jpeg"
 
 $job_id = ($job_create | ConvertFrom-Json).job_id
 "JOB_ID=$job_id"
@@ -417,14 +422,14 @@ done
 ---
 ## 8) Запуск RunPod
 - Выбрать GPU (например A5000 24GB).
-- Образ: `vllm/vllm-openai`
+- Образ: `vllm/vllm-openai:latest`
 - Start command (рекомендуется через shell, чтобы работали `${...}`)
 ```bash
 {"entrypoint":["bash","-lc"],"cmd":["vllm serve ${VLLM_MODEL:-Qwen/Qwen3-VL-8B-Instruct} --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len ${VLLM_MAX_MODEL_LEN:-4096} --download-dir ${HF_HOME:-/workspace/hf} --dtype ${VLLM_DTYPE:-auto} --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.9}"]}
 ```
 или же просто
 ```bash
---model Qwen/Qwen3-VL-8B-Instruct --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len 4096
+--model Qwen/Qwen3-VL-8B-Instruct --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len 4096 --limit-mm-per-prompt.video 0
 ```
 - Порт: `8000`
 - Env (пример)
