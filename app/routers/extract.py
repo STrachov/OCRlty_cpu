@@ -75,6 +75,7 @@ async def extract_async(
 
         ref = await asyncio.to_thread(
             extract_service.persist_input_bytes,
+            api_key_id=str(principal.api_key_id),
             data=data,
             name_hint="extract_input",
         )
@@ -149,7 +150,7 @@ async def batch_extract_upload_async(
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> JobCreateResponse:
     # Persist uploads immediately (so job request stays small and rerunnable).
-    persisted = await extract_service.persist_upload_files(files)
+    persisted = await extract_service.persist_upload_files(str(principal.api_key_id), files)
 
     job_req = {
         "task_id": task_id,

@@ -219,10 +219,15 @@ def _clamp_max_tokens(max_tokens: int) -> int:
 
 
 def _sanitize_input_for_artifact(req: ExtractRequest) -> Dict[str, Any]:
+    """Sanitize request payload before persisting into an extract artifact.
+
+    IMPORTANT: Do not store image bytes (even truncated base64) in artifacts.
+    Keep only lightweight metadata so artifacts remain safe and compact.
+    """
     data = req.model_dump()
-    if data.get("image_base64"):
-        s = str(data["image_base64"])
-        data["image_base64"] = s[:256] + ("..." if len(s) > 256 else "")
+    b64 = data.pop("image_base64", None)
+    if isinstance(b64, str) and b64:
+        data["image_base64_len"] = len(b64)
     return data
 
 
@@ -401,15 +406,32 @@ def _sanitize_ext_from_name(name: str) -> str:
     return ext
 
 
-def _inputs_rel_for_hash(*, sha256_hex: str, name_hint: str) -> str:
+def _sanitize_owner_segment(owner: str) -> str:
+    """Return a safe path segment for per-owner namespacing.
+
+    We prefer using `api_key_id` (an int) so this is mostly a safety net.
+    """
+    s = str(owner).strip()
+    if not s:
+        return "unknown"
+    # Allow only simple URL/path-safe chars.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", s):
+        # Fallback: hash the value to avoid leaking/invalid chars.
+        s = hashlib.sha256(s.encode("utf-8")).hexdigest()[:32]
+    return s
+
+
+def _inputs_rel_for_hash(*, api_key_id: str, sha256_hex: str, name_hint: str) -> str:
+    """Build inputs/<api_key_id>/<shard>/<shard>/<sha><ext> relative ref."""
     ext = _sanitize_ext_from_name(name_hint)
-    p = Path("inputs") / sha256_hex[:2] / sha256_hex[2:4] / (sha256_hex + ext)
+    owner = _sanitize_owner_segment(api_key_id)
+    p = Path("inputs") / owner / sha256_hex[:2] / sha256_hex[2:4] / (sha256_hex + ext)
     return str(p).replace("\\", "/")
 
 
-def _persist_input_bytes(*, data: bytes, name_hint: str) -> str:
+def _persist_input_bytes(*, api_key_id: str, data: bytes, name_hint: str) -> str:
     h = hashlib.sha256(data).hexdigest()
-    rel = _inputs_rel_for_hash(sha256_hex=h, name_hint=name_hint)
+    rel = _inputs_rel_for_hash(api_key_id=api_key_id, sha256_hex=h, name_hint=name_hint)
     if s3_enabled():
         key = s3_key(rel)
         s3_put_bytes(key=key, data=data, content_type=_guess_mime_type(name_hint) or "application/octet-stream")
@@ -433,15 +455,15 @@ def _load_input_bytes_by_rel(rel: str) -> bytes:
         raise HTTPException(status_code=404, detail=f"Input ref not found: {rel}")
     return abs_p.read_bytes()
 
-def persist_input_bytes(*, data: bytes, name_hint: str) -> str:
+def persist_input_bytes(*, api_key_id: str, data: bytes, name_hint: str) -> str:
     """Persist bytes into artifacts inputs/.. and return input_ref (relative path).
 
     This is a small public wrapper used by async endpoints to avoid storing base64 in JobsStore.
     """
-    return _persist_input_bytes(data=data, name_hint=name_hint)
+    return _persist_input_bytes(api_key_id=api_key_id, data=data, name_hint=name_hint)
 
 
-async def persist_upload_files(files: List[UploadFile]) -> List[Dict[str, Any]]:
+async def persist_upload_files(api_key_id: str, files: List[UploadFile]) -> List[Dict[str, Any]]:
     """Persist uploaded files and return list of dicts: {file, input_ref, mime_type}."""
     out: List[Dict[str, Any]] = []
     for uf in files:
@@ -449,7 +471,7 @@ async def persist_upload_files(files: List[UploadFile]) -> List[Dict[str, Any]]:
         if not data:
             continue
         mime = (uf.content_type or _guess_mime_type(uf.filename or "file")).split(";")[0].strip() or "application/octet-stream"
-        ref = await asyncio.to_thread(_persist_input_bytes, data=data, name_hint=uf.filename or "file")
+        ref = await asyncio.to_thread(_persist_input_bytes, api_key_id=api_key_id, data=data, name_hint=uf.filename or "file")
         out.append({"file": uf.filename or "file", "input_ref": ref, "mime_type": mime})
     return out
 
@@ -1113,7 +1135,7 @@ async def batch_extract_upload(
         mime = (uf.content_type or _guess_mime_type(uf.filename or "file")).split(";")[0].strip()
         ref = None
         if persist_inputs:
-            ref = await asyncio.to_thread(_persist_input_bytes, data=data, name_hint=uf.filename or "file")
+            ref = await asyncio.to_thread(_persist_input_bytes, api_key_id=str(principal.api_key_id), data=data, name_hint=uf.filename or "file")
         inputs.append(_BatchInput(file=uf.filename or "file", bytes=data, mime_type=mime, input_ref=ref))
 
     resp = await _run_batch_extract_core(
