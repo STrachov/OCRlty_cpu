@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import init_auth_db
 from app.settings import settings
@@ -125,6 +126,20 @@ async def lifespan(app: FastAPI):
             logging.getLogger("ocrlty").exception("vllm_http_close_failed")
 
 app = FastAPI(title="OCRlty", version="0.1", lifespan=lifespan)
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    #"https://your-ui-domain.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,   # не "*", если есть auth
+    allow_credentials=False,          # True только если cookie-based auth
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
+)
 
 
 @app.middleware("http")

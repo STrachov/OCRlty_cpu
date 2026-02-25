@@ -208,7 +208,7 @@ def _debug_allowed(principal: ApiPrincipal) -> None:
 def _raw_allowed(principal: ApiPrincipal) -> bool:
     if not _debug_enabled():
         return False
-    if getattr(settings, "AUTH_ENABLED", True) and ("debug:raw" not in principal.scopes):
+    if getattr(settings, "AUTH_ENABLED", True) and ("debug:read_raw" not in principal.scopes):
         return False
     return True
 
