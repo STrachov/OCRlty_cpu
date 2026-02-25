@@ -3,11 +3,13 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from app.auth import require_scopes
+from app.schemas.api_error import common_error_responses
 from app.services.debug_service import DebugService
 from app.settings import settings
 from app import handlers
 
 router = APIRouter(prefix="/v1/debug", tags=["debug"])
+_ERR = common_error_responses(400, 401, 403, 404, 422, 500)
 
 
 def _debug_enabled() -> None:
@@ -24,6 +26,7 @@ def get_debug_service() -> DebugService:
 @router.get(
     "/artifacts",
     response_model=handlers.ArtifactListResponse,
+    responses=_ERR,
     dependencies=[Depends(_debug_enabled), Depends(require_scopes(["debug:read_raw"]))],
 )
 async def list_artifacts(
@@ -36,6 +39,7 @@ async def list_artifacts(
 
 @router.get(
     "/artifacts/backup.tar.gz",
+    responses=_ERR,
     dependencies=[Depends(_debug_enabled), Depends(require_scopes(["debug:read_raw"]))],
 )
 async def get_artifacts_backup(
@@ -47,6 +51,8 @@ async def get_artifacts_backup(
 
 @router.get(
     "/artifacts/{request_id}",
+    response_model=Dict[str, Any],
+    responses=_ERR,
     dependencies=[Depends(_debug_enabled), Depends(require_scopes(["debug:read_raw"]))],
 )
 async def read_artifact(
@@ -59,6 +65,8 @@ async def read_artifact(
 
 @router.get(
     "/artifacts/{request_id}/raw",
+    response_model=Dict[str, Any],
+    responses=_ERR,
     dependencies=[Depends(_debug_enabled), Depends(require_scopes(["debug:read_raw"]))],
 )
 async def read_artifact_raw_text(
@@ -72,6 +80,7 @@ async def read_artifact_raw_text(
 @router.post(
     "/eval/batch_vs_gt",
     response_model=handlers.EvalBatchVsGTResponse,
+    responses=_ERR,
     dependencies=[Depends(_debug_enabled), Depends(require_scopes(["debug:run"]))],
 )
 async def eval_batch_vs_gt(

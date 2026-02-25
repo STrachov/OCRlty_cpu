@@ -8,11 +8,13 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_scopes
 from app.auth_store import ApiPrincipal
+from app.schemas.api_error import common_error_responses
 from app.services.jobs_store import JobsStore, JobRecord
 from app.services.jobs_runner import BaseJobRunner
 from app.services.artifacts import read_artifact_json
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
+_ERR = common_error_responses(400, 401, 403, 404, 422, 500)
 
 
 def _store(request: Request) -> JobsStore:
@@ -101,12 +103,46 @@ class JobCreateResponse(BaseModel):
     poll_url: str
 
 
+class JobView(BaseModel):
+    job_id: str
+    kind: str
+    status: str
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    owner_key_id: Optional[str] = None
+    owner_role: Optional[str] = None
+    cancel_requested: bool
+
+    request: Dict[str, Any] = Field(default_factory=dict)
+    progress: Optional[Dict[str, Any]] = None
+
+    result_ref: Optional[str] = None
+    result_meta: Optional[Dict[str, Any]] = None
+    result_bytes: Optional[int] = None
+    result_sha256: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+
+    error_ref: Optional[str] = None
+    error: Optional[Dict[str, Any]] = None
+
+
+class JobListResponse(BaseModel):
+    items: List[JobView]
+
+
+class JobCancelResponse(BaseModel):
+    ok: bool
+
+
 # ---- Endpoints ----
 
 @router.post(
     "/batch_extract_dir",
     response_model=JobCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERR,
     dependencies=[Depends(require_scopes(["extract:run"]))],
 )
 async def enqueue_batch_extract_dir(
@@ -130,6 +166,7 @@ async def enqueue_batch_extract_dir(
     "/batch_extract_rerun",
     response_model=JobCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERR,
     dependencies=[Depends(require_scopes(["extract:run"]))],
 )
 async def enqueue_batch_extract_rerun(
@@ -151,6 +188,8 @@ async def enqueue_batch_extract_rerun(
 
 @router.get(
     "",
+    response_model=JobListResponse,
+    responses=_ERR,
     dependencies=[Depends(require_scopes(["extract:run"]))],
 )
 async def list_jobs(
@@ -164,11 +203,13 @@ async def list_jobs(
 
     owner_key_id = None if principal.role == "admin" else principal.key_id
     jobs = store.list_jobs(owner_key_id=owner_key_id, status=status_, limit=limit, offset=offset)
-    return {"items": [_job_to_dict(j) for j in jobs]}
+    return JobListResponse(items=[JobView(**_job_to_dict(j)) for j in jobs])
 
 
 @router.get(
     "/{job_id}",
+    response_model=JobView,
+    responses=_ERR,
     dependencies=[Depends(require_scopes(["extract:run"]))],
 )
 async def get_job(
@@ -181,11 +222,13 @@ async def get_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found.")
     _enforce_owner_or_admin(principal, job)
-    return _job_to_dict(job)
+    return JobView(**_job_to_dict(job))
 
 
 @router.get(
     "/{job_id}/result",
+    response_model=Dict[str, Any],
+    responses=_ERR,
     dependencies=[Depends(require_scopes(["extract:run"]))],
 )
 async def get_job_result(
@@ -205,6 +248,8 @@ async def get_job_result(
 
 @router.get(
     "/{job_id}/error",
+    response_model=Dict[str, Any],
+    responses=_ERR,
     dependencies=[Depends(require_scopes(["extract:run"]))],
 )
 async def get_job_error_details(
@@ -224,6 +269,8 @@ async def get_job_error_details(
 
 @router.post(
     "/{job_id}/cancel",
+    response_model=JobCancelResponse,
+    responses=_ERR,
     dependencies=[Depends(require_scopes(["extract:run"]))],
 )
 async def cancel_job(
@@ -243,4 +290,4 @@ async def cancel_job(
     if job2 and job2.status == "queued":
         store.mark_canceled(job_id)
 
-    return {"ok": True}
+    return JobCancelResponse(ok=True)

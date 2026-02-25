@@ -11,6 +11,7 @@ from app.settings import settings
 from app.routers.core import router as core_router
 from app.routers.extract import router as extract_router
 from app.routers.debug import router as debug_router
+from app.error_handlers import register_error_handlers
 from app.handlers import make_request_id, REQUEST_ID_CTX, setup_logging, load_tasks
 from app.services.artifacts import artifact_index_init
 
@@ -126,6 +127,7 @@ async def lifespan(app: FastAPI):
             logging.getLogger("ocrlty").exception("vllm_http_close_failed")
 
 app = FastAPI(title="OCRlty", version="0.1", lifespan=lifespan)
+register_error_handlers(app)
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -147,6 +149,7 @@ async def request_id_ctx_mw(request: Request, call_next):
     hdr = request.headers.get("x-request-id") or request.headers.get("x-request_id")
     rid = make_request_id(hdr)
     token = REQUEST_ID_CTX.set(rid)
+    request.state.request_id = rid
     try:
         resp = await call_next(request)
         resp.headers["x-request-id"] = rid

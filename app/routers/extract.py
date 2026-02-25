@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.auth import ApiPrincipal, require_scopes
 from app.handlers import get_vllm_client
+from app.schemas.api_error import common_error_responses
 from app.vllm_client import VLLMClient
 from app.services import extract_service
 from app.services.jobs_runner import BaseJobRunner
@@ -17,6 +18,7 @@ from app.services.jobs_store import JobsStore
 
 
 router = APIRouter(prefix="/v1", tags=["extract"])
+_ERR = common_error_responses(400, 401, 403, 404, 422, 500)
 
 
 class JobCreateResponse(BaseModel):
@@ -47,7 +49,7 @@ async def _enqueue_job(*, request: Request, principal: ApiPrincipal, kind: str, 
     return JobCreateResponse(job_id=job.job_id, status=job.status, poll_url=f"/v1/jobs/{job.job_id}")
 
 
-@router.post("/extract", response_model=extract_service.ExtractResponse)
+@router.post("/extract", response_model=extract_service.ExtractResponse, responses=_ERR)
 async def extract(
     req: extract_service.ExtractRequest,
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
@@ -56,7 +58,12 @@ async def extract(
     return await extract_service.extract(req, principal=principal, vllm_client=vllm_client)
 
 
-@router.post("/extract_async", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/extract_async",
+    response_model=JobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERR,
+)
 async def extract_async(
     req: extract_service.ExtractRequest,
     request: Request,
@@ -86,7 +93,7 @@ async def extract_async(
 
 
 
-@router.post("/batch_extract", response_model=extract_service.BatchExtractResponse)
+@router.post("/batch_extract", response_model=extract_service.BatchExtractResponse, responses=_ERR)
 async def batch_extract(
     req: extract_service.BatchExtractRequest,
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
@@ -95,7 +102,12 @@ async def batch_extract(
     return await extract_service.batch_extract(req, principal=principal, vllm_client=vllm_client)
 
 
-@router.post("/batch_extract_async", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/batch_extract_async",
+    response_model=JobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERR,
+)
 async def batch_extract_async(
     req: extract_service.BatchExtractRequest,
     request: Request,
@@ -104,7 +116,7 @@ async def batch_extract_async(
     return await _enqueue_job(request=request, principal=principal, kind="batch_extract", payload=req.model_dump())
 
 
-@router.post("/batch_extract_upload", response_model=extract_service.BatchExtractResponse)
+@router.post("/batch_extract_upload", response_model=extract_service.BatchExtractResponse, responses=_ERR)
 async def batch_extract_upload(
     task_id: str = Form(...),
     persist_inputs: bool = Form(False),
@@ -135,7 +147,12 @@ async def batch_extract_upload(
     )
 
 
-@router.post("/batch_extract_upload_async", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/batch_extract_upload_async",
+    response_model=JobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERR,
+)
 async def batch_extract_upload_async(
     request: Request,
     task_id: str = Form(...),
@@ -166,7 +183,7 @@ async def batch_extract_upload_async(
     return await _enqueue_job(request=request, principal=principal, kind="batch_extract_inputs", payload=job_req)
 
 
-@router.post("/batch_extract_rerun", response_model=extract_service.BatchExtractResponse)
+@router.post("/batch_extract_rerun", response_model=extract_service.BatchExtractResponse, responses=_ERR)
 async def batch_extract_rerun(
     req: extract_service.BatchRerunRequest,
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
@@ -175,7 +192,12 @@ async def batch_extract_rerun(
     return await extract_service.batch_extract_rerun(req, principal=principal, vllm_client=vllm_client)
 
 
-@router.post("/batch_extract_rerun_async", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/batch_extract_rerun_async",
+    response_model=JobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=_ERR,
+)
 async def batch_extract_rerun_async(
     req: extract_service.BatchRerunRequest,
     request: Request,
