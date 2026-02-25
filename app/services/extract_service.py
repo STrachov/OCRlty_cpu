@@ -289,18 +289,6 @@ def _estimate_prompt_tokens(text: str) -> int:
 
 _TOO_LONG_PAT = re.compile(r"decoder prompt too long", re.IGNORECASE)
 
-
-def _parse_decoder_prompt_too_long(err_text: str) -> Optional[int]:
-    # Example errors differ by backend; try to extract max tokens if present.
-    m = re.search(r"max\\s*(\\d+)", err_text, re.IGNORECASE)
-    if m:
-        try:
-            return int(m.group(1))
-        except Exception:
-            return None
-    return None
-
-
 def _compute_retry_scale(*, attempt: int, max_attempts: int) -> float:
     # progressively shrink
     if max_attempts <= 1:
@@ -401,7 +389,7 @@ def _sanitize_ext_from_name(name: str) -> str:
         return ""
     if len(ext) > 10:
         ext = ext[:10]
-    if not re.fullmatch(r"\\.[a-z0-9]+", ext):
+    if not re.fullmatch(r"\.[a-z0-9]+", ext):
         return ""
     return ext
 

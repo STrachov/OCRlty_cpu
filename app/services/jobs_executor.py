@@ -24,10 +24,10 @@ def _get_vllm_client() -> VLLMClient:
         return _vllm
 
     timeout = httpx.Timeout(
-        connect=float(getattr(settings, "VLLM_CONNECT_TIMEOUT", 5.0) or 5.0),
-        read=float(getattr(settings, "VLLM_READ_TIMEOUT", 60.0) or 60.0),
-        write=float(getattr(settings, "VLLM_WRITE_TIMEOUT", 60.0) or 60.0),
-        pool=float(getattr(settings, "VLLM_POOL_TIMEOUT", 5.0) or 5.0),
+        connect=float(getattr(settings, "VLLM_CONNECT_TIMEOUT_S", 5.0) or 5.0),
+        read=float(getattr(settings, "VLLM_READ_TIMEOUT_S", 60.0) or 60.0),
+        write=float(getattr(settings, "VLLM_WRITE_TIMEOUT_S", 60.0) or 60.0),
+        pool=float(getattr(settings, "VLLM_POOL_TIMEOUT_S", 5.0) or 5.0),
     )
     _http = httpx.AsyncClient(timeout=timeout)
     _vllm = VLLMClient(

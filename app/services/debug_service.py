@@ -50,7 +50,11 @@ class DebugService:
                     if not key.endswith(".json"):
                         continue
                     rid = Path(key).stem
-                    items.append(handlers.ArtifactListItem(request_id=rid, artifact_rel=artifacts.to_artifact_rel(key)))
+                    items.append(handlers.ArtifactListItem(
+                        request_id=rid, 
+                        rel_path=artifacts.to_artifact_rel(key),
+                        created_at=datetime.now(timezone.utc).isoformat(),kind="extract"
+                        ))
                 return handlers.ArtifactListResponse(items=items)
 
             d = ARTIFACTS_DIR / "extracts" / date
@@ -58,7 +62,11 @@ class DebugService:
                 return handlers.ArtifactListResponse(items=[])
             files = sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
             for p in files[:limit]:
-                items.append(handlers.ArtifactListItem(request_id=p.stem, artifact_rel=artifacts.to_artifact_rel(p)))
+                items.append(handlers.ArtifactListItem(
+                    request_id=p.stem, 
+                    rel_path=artifacts.to_artifact_rel(p),
+                    created_at=datetime.now(timezone.utc).isoformat(),kind="extract"
+                    ))
             return handlers.ArtifactListResponse(items=items)
 
         # No date: walk days desc
