@@ -11,7 +11,7 @@ from app.auth_store import ApiPrincipal
 from app.schemas.api_error import common_error_responses
 from app.services.jobs_store import JobsStore, JobRecord
 from app.services.jobs_runner import BaseJobRunner
-from app.services.artifacts import read_artifact_json
+from app.services.artifacts import read_artifact_json, to_artifact_rel
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
 _ERR = common_error_responses(400, 401, 403, 404, 422, 500)
@@ -48,7 +48,7 @@ def _job_to_dict(j: JobRecord) -> Dict[str, Any]:
         "request": j.request,
         "progress": j.progress,
 
-        "result_ref": j.result_ref,
+        "result_rel": to_artifact_rel(j.result_ref) if j.result_ref else None,
         "result_meta": j.result_meta,
         "result_bytes": j.result_bytes,
         "result_sha256": j.result_sha256,
@@ -56,7 +56,7 @@ def _job_to_dict(j: JobRecord) -> Dict[str, Any]:
         # Backward-compatible alias:
         "result": j.result_meta,
 
-        "error_ref": j.error_ref,
+        "error_rel": to_artifact_rel(j.error_ref) if j.error_ref else None,
         "error": j.error,
     }
 
@@ -118,13 +118,13 @@ class JobView(BaseModel):
     request: Dict[str, Any] = Field(default_factory=dict)
     progress: Optional[Dict[str, Any]] = None
 
-    result_ref: Optional[str] = None
+    result_rel: Optional[str] = None
     result_meta: Optional[Dict[str, Any]] = None
     result_bytes: Optional[int] = None
     result_sha256: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
 
-    error_ref: Optional[str] = None
+    error_rel: Optional[str] = None
     error: Optional[Dict[str, Any]] = None
 
 

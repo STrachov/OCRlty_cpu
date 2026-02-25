@@ -29,6 +29,7 @@ from app.services.artifacts import (
     read_json_file,
     save_eval_artifact,
     find_batch_artifact_path,
+    to_artifact_rel,
 )
 from app.services.s3_service import s3_enabled
 
@@ -317,8 +318,8 @@ class EvalBatchVsGTResponse(BaseModel):
     created_at: str
     run_id: str
     gt_path: str
-    batch_artifact_path: str
-    eval_artifact_path: str
+    batch_artifact_rel: str
+    eval_artifact_rel: str
 
 
 class _Missing:
@@ -801,7 +802,7 @@ async def eval_batch_vs_gt(
         "batch_date": batch_date,
         "task_id": task_id,
         "gt_path": str(gt_p),
-        "batch_artifact_path": str(batch_path),
+        "batch_artifact_rel": to_artifact_rel(batch_path),
         "summary": {
             "items": len(items),
             "gt_found": gt_found,
@@ -816,13 +817,13 @@ async def eval_batch_vs_gt(
     }
 
     owner = (batch_obj.get("auth") or {}).get("key_id")
-    eval_artifact_path = await save_eval_artifact(payload, owner)
+    eval_artifact_ref = await save_eval_artifact(payload, owner)
 
     return EvalBatchVsGTResponse(
         eval_id=eval_id,
         created_at=created_at,
         run_id=req.run_id,
         gt_path=str(gt_p),
-        batch_artifact_path=str(batch_path),
-        eval_artifact_path=eval_artifact_path,
+        batch_artifact_rel=to_artifact_rel(batch_path),
+        eval_artifact_rel=to_artifact_rel(eval_artifact_ref),
     )

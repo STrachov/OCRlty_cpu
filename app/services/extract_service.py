@@ -33,6 +33,7 @@ from app.services.artifacts import (
     save_batch_artifact,
     find_artifact_path,
     find_batch_artifact_path,
+    to_artifact_rel,
 )
 from app.services.s3_service import s3_enabled, s3_get_bytes, s3_key, s3_put_bytes, s3_put_json
 
@@ -87,7 +88,7 @@ class ExtractResponse(BaseModel):
     request_id: str
     created_at: str
     task_id: str
-    artifact_path: str
+    artifact_rel: str
 
     model_id: str
     prompt_sha256: str
@@ -159,7 +160,7 @@ class BatchExtractResponse(BaseModel):
     item_count: int
     ok_count: int
     error_count: int
-    artifact_path: str
+    artifact_rel: str
     items: List[BatchItemResult]
     eval: Optional[Dict[str, Any]] = None
 
@@ -621,13 +622,13 @@ async def extract(
                 },
             }
 
-            artifact_path = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
+            artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
 
             return ExtractResponse(
                 request_id=request_id,
                 created_at=created_at,
                 task_id=req.task_id,
-                artifact_path=str(artifact_path),
+                artifact_rel=to_artifact_rel(artifact_ref),
                 model_id=MODEL_ID,
                 prompt_sha256=prompt_sha,
                 schema_sha256=schema_sha,
@@ -670,12 +671,12 @@ async def extract(
                 "error_history": error_history or None,
                 "meta": {"attempts": attempt, "resize_scale": resize_scale},
             }
-            artifact_path = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
+            artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
             return ExtractResponse(
                 request_id=request_id,
                 created_at=created_at,
                 task_id=req.task_id,
-                artifact_path=str(artifact_path),
+                artifact_rel=to_artifact_rel(artifact_ref),
                 model_id=MODEL_ID,
                 prompt_sha256=prompt_sha,
                 schema_sha256=schema_sha,
@@ -699,12 +700,12 @@ async def extract(
                 "error_history": error_history or None,
                 "meta": {"attempts": attempt, "resize_scale": resize_scale},
             }
-            artifact_path = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
+            artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
             return ExtractResponse(
                 request_id=request_id,
                 created_at=created_at,
                 task_id=req.task_id,
-                artifact_path=str(artifact_path),
+                artifact_rel=to_artifact_rel(artifact_ref),
                 model_id=MODEL_ID,
                 prompt_sha256=prompt_sha,
                 schema_sha256=schema_sha,
@@ -909,7 +910,7 @@ async def _run_batch_extract_core(
                         file=inp.file,
                         request_id=request_id,
                         input_ref=inp.input_ref,
-                        artifact_rel=resp.artifact_path,
+                        artifact_rel=resp.artifact_rel,
                         ok=resp.error is None,
                         parsed=resp.parsed,     
                         schema_valid=resp.schema_valid,     
@@ -932,7 +933,7 @@ async def _run_batch_extract_core(
                         file=inp.file,
                         request_id=request_id,
                         input_ref=inp.input_ref,
-                        artifact_rel=str(art_ref) if art_ref else None,
+                        artifact_rel=to_artifact_rel(art_ref) if art_ref else None,
                         ok=False,
                         parsed=None,
                         schema_valid=None,
@@ -967,7 +968,7 @@ async def _run_batch_extract_core(
     await _emit_progress(stage="finalizing", force=True)
 
     try:
-        batch_path = await asyncio.to_thread(save_batch_artifact, run_id, batch_payload, principal.key_id)
+        batch_ref = await asyncio.to_thread(save_batch_artifact, run_id, batch_payload, principal.key_id)
     except Exception:
         await _emit_progress(stage="failed", force=True)
         raise
@@ -979,7 +980,7 @@ async def _run_batch_extract_core(
         try:
             eval_info = await _run_eval_batch_vs_gt(
                 principal=principal,
-                batch_path=batch_path,
+                batch_path=batch_ref,
                 run_id=run_id,
                 gt_path=gt_path,
                 gt_image_key=gt_image_key,
@@ -1000,7 +1001,7 @@ async def _run_batch_extract_core(
         item_count=len(items),
         ok_count=ok_count,
         error_count=err_count,
-        artifact_path=str(batch_path),
+        artifact_rel=to_artifact_rel(batch_ref),
         items=items,
         eval=eval_info,
     )

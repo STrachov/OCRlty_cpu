@@ -29,7 +29,7 @@ def _thin_result_meta(kind: str, result: Dict[str, Any]) -> Dict[str, Any]:
             "type": "extract",
             "task_id": result.get("task_id"),
             "request_id": result.get("request_id"),
-            "artifact_path": result.get("artifact_path"),
+            "artifact_rel": result.get("artifact_rel"),
             "schema_valid": result.get("schema_valid"),
             "model_id": result.get("model_id"),
             "prompt_sha256": result.get("prompt_sha256"),
@@ -42,7 +42,7 @@ def _thin_result_meta(kind: str, result: Dict[str, Any]) -> Dict[str, Any]:
             "type": "batch",
             "task_id": result.get("task_id"),
             "run_id": result.get("run_id"),
-            "artifact_path": result.get("artifact_path"),
+            "artifact_rel": result.get("artifact_rel"),
             "concurrency": result.get("concurrency"),
             "item_count": result.get("item_count"),
             "ok_count": result.get("ok_count"),
@@ -52,9 +52,9 @@ def _thin_result_meta(kind: str, result: Dict[str, Any]) -> Dict[str, Any]:
         }
         # Optional eval pointer(s) if present
         if isinstance(result.get("eval"), dict):
-            meta["eval_artifact_path"] = result["eval"].get("eval_artifact_path") or result["eval"].get("artifact_path")
-        elif result.get("eval_artifact_path"):
-            meta["eval_artifact_path"] = result.get("eval_artifact_path")
+            meta["eval_artifact_rel"] = result["eval"].get("eval_artifact_rel")
+        elif result.get("eval_artifact_rel"):
+            meta["eval_artifact_rel"] = result.get("eval_artifact_rel")
         return meta
 
     # Default

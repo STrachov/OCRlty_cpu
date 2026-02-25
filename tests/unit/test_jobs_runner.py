@@ -7,7 +7,7 @@ def test_thin_result_meta_extract_shape():
         {
             "task_id": "receipt_fields_v1",
             "request_id": "rid1",
-            "artifact_path": "extracts/2026-02-25/rid1.json",
+            "artifact_rel": "extracts/2026-02-25/rid1.json",
             "schema_valid": True,
             "model_id": "m1",
             "prompt_sha256": "a",
@@ -17,7 +17,7 @@ def test_thin_result_meta_extract_shape():
 
     assert meta["type"] == "extract"
     assert meta["request_id"] == "rid1"
-    assert "artifact_path" in meta
+    assert "artifact_rel" in meta
 
 
 def test_thin_result_meta_batch_shape():
@@ -26,17 +26,17 @@ def test_thin_result_meta_batch_shape():
         {
             "task_id": "receipt_fields_v1",
             "run_id": "run1",
-            "artifact_path": "batches/2026-02-25/run1.json",
+            "artifact_rel": "batches/2026-02-25/run1.json",
             "concurrency": 4,
             "item_count": 10,
             "ok_count": 9,
             "error_count": 1,
             "images_dir": "d",
             "glob": "**/*",
-            "eval": {"eval_artifact_path": "evals/2026-02-25/e1.json"},
+            "eval": {"eval_artifact_rel": "evals/2026-02-25/e1.json"},
         },
     )
 
     assert meta["type"] == "batch"
     assert meta["run_id"] == "run1"
-    assert meta["eval_artifact_path"].endswith("e1.json")
+    assert meta["eval_artifact_rel"].endswith("e1.json")
