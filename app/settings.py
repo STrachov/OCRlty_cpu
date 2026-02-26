@@ -2,9 +2,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, AliasChoices, field_validator
 
 class Settings(BaseSettings):
+    # --- Primary DB (PostgreSQL) ---
+    # Single source of truth for relational data (jobs/auth/artifact_index).
+    DATABASE_URL: str = "postgresql+psycopg://postgres:postgres@localhost:5432/ocrlty"
+
     # --- Auth ---
     AUTH_ENABLED: bool = True
-    AUTH_DB_PATH: str = "/data/db/auth.db"
     API_KEY_PEPPER: str
 
     # --- Debug / local dev ---
@@ -50,12 +53,11 @@ class Settings(BaseSettings):
 
     # --- Jobs ---
     JOBS_BACKEND: str = "local"          # local | celery
-    JOBS_DB_PATH: str = "/data/db/jobs.db"
     JOBS_MAX_CONCURRENCY: int = 2
 
     # Progress reporting for long-running jobs (batch_* async).
     # - JOBS_PROGRESS_EVERY_N=1 is handy for debugging (update after every item).
-    # - In production set higher values (e.g. 10/25) to reduce SQLite writes.
+    # - In production set higher values (e.g. 10/25) to reduce DB write frequency.
     JOBS_PROGRESS_EVERY_N: int = 1
     JOBS_PROGRESS_MIN_SECONDS: float = 0.0
 

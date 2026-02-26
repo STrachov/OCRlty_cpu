@@ -39,18 +39,19 @@ def _parse_scopes(scopes_arg: Optional[str]) -> Optional[List[str]]:
 def main() -> None:
     p = argparse.ArgumentParser(
         prog="auth-cli",
-        description="Local CLI for managing API keys (SQLite).",
+        description="Local CLI for managing API keys (PostgreSQL).",
     )
     p.add_argument(
+        "--database-url",
         "--db",
-        default=settings.AUTH_DB_PATH,
-        help=f"Path to SQLite db (default: {settings.AUTH_DB_PATH})",
+        default=settings.DATABASE_URL,
+        help=f"PostgreSQL DATABASE_URL (default: {settings.DATABASE_URL})",
     )
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub_init = sub.add_parser("init-db", help="Create tables if needed")
-    sub_init.set_defaults(func=lambda args: init_auth_db(args.db))
+    sub_init = sub.add_parser("init-db", help="Validate DB connection/schema")
+    sub_init.set_defaults(func=lambda args: init_auth_db(args.database_url))
 
 
     sub_create = sub.add_parser("create-key", help="Create a new API key")
@@ -71,7 +72,7 @@ def main() -> None:
             key_id=args.key_id,
             role=args.role,
             scopes=scopes,
-            db_path=args.db,
+            database_url=args.database_url,
         )
         print("=== API KEY CREATED (shown only once) ===")
         print(f"key_id:  {principal.key_id}")
@@ -86,7 +87,7 @@ def main() -> None:
     sub_revoke.add_argument("--key-id", required=True)
 
     def _revoke(args):
-        ok = revoke_api_key(args.key_id, db_path=args.db)
+        ok = revoke_api_key(args.key_id, database_url=args.database_url)
         if ok:
             print(f"Revoked: {args.key_id}")
         else:
@@ -97,7 +98,7 @@ def main() -> None:
     sub_list = sub.add_parser("list-keys", help="List keys (no secrets)")
 
     def _list(args):
-        rows = list_api_keys(db_path=args.db)
+        rows = list_api_keys(database_url=args.database_url)
         if not rows:
             print("(no keys)")
             return

@@ -23,7 +23,7 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND or settings.CELERY_BROKER_URL,
 )
 
-_store = JobsStore(settings.JOBS_DB_PATH)
+_store = JobsStore(settings.DATABASE_URL)
 
 
 def _thin_result_meta(kind: str, result: Dict[str, Any]) -> Dict[str, Any]:

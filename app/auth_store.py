@@ -1,25 +1,23 @@
 # app/auth_store.py
 """
-AuthStore: a small repository-style wrapper around the auth SQLite DB.
+AuthStore: PostgreSQL-backed API key repository.
 
 Goals:
-- Same "store class" shape as ArtifactIndex (init-once + methods).
-- Works with FastAPI via dependency factories (no global singletons required).
-- Safe to call ensure_init() multiple times (idempotent).
+- Same "store class" shape as before (init-once + methods).
+- Works with FastAPI via dependency factories.
+- Fail-fast if migrations were not applied.
 """
 
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
 import json
 import secrets
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from fastapi import Depends, HTTPException, Request
 
@@ -30,6 +28,14 @@ ROLE_PRESET_SCOPES: Dict[str, List[str]] = {
     "debugger": ["extract:run", "debug:run"],
     "admin": ["extract:run", "debug:run", "debug:read_raw"],
 }
+
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # pragma: no cover - optional dependency
+    psycopg = None  # type: ignore[assignment]
+    dict_row = None  # type: ignore[assignment]
 
 
 def _utc_now_iso() -> str:
@@ -46,17 +52,25 @@ class ApiPrincipal:
 
 class AuthStore:
     """
-    SQLite-backed API key store.
+    PostgreSQL-backed API key store.
 
     Notes:
     - If settings.AUTH_ENABLED is True, pepper must be set (settings.API_KEY_PEPPER),
       otherwise RuntimeError is raised (fail-fast).
-    - The store is safe to use from multiple threads: it opens a new SQLite connection
-      per call and guards one-time init with a lock.
+    - The store opens a new DB connection per call and guards one-time init with a lock.
     """
 
-    def __init__(self, db_path: str = settings.AUTH_DB_PATH) -> None:
-        self._db_path = db_path
+    def __init__(self, database_url: str = settings.DATABASE_URL) -> None:
+        self._database_url = str(database_url or "").strip()
+        if not (
+            self._database_url.startswith("postgresql://")
+            or self._database_url.startswith("postgres://")
+            or self._database_url.startswith("postgresql+psycopg://")
+        ):
+            raise RuntimeError(
+                "AuthStore requires PostgreSQL DATABASE_URL "
+                "(expected postgresql://..., postgres://... or postgresql+psycopg://...)."
+            )
         self._init_lock = threading.Lock()
         self._initialized = False
 
@@ -79,41 +93,41 @@ class AuthStore:
             hashlib.sha256,
         ).hexdigest()
 
-    def _ensure_db_dir(self) -> None:
-        Path(self._db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    def _connect(self) -> Any:
+        if psycopg is None:
+            raise RuntimeError(
+                "AuthStore requires psycopg. Install dependency: psycopg[binary]>=3.2,<4"
+            )
+        dsn = self._database_url
+        if dsn.startswith("postgresql+psycopg://"):
+            dsn = "postgresql://" + dsn[len("postgresql+psycopg://") :]
+        return psycopg.connect(  # type: ignore[union-attr]
+            dsn,
+            connect_timeout=10,
+            row_factory=dict_row,
+        )
 
-    def _connect(self) -> sqlite3.Connection:
-        self._ensure_db_dir()
-        conn = sqlite3.connect(self._db_path, timeout=10, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _execute(self, conn: Any, query: str, args: Sequence[Any] = ()) -> Any:
+        return conn.execute(query, tuple(args))
 
     # ---- init ----
 
     def init(self) -> None:
-        """Create tables/indexes if missing. Safe to call on every startup."""
+        """Verify schema. Migrations are expected to be applied via Alembic."""
         if settings.AUTH_ENABLED:
             self._require_pepper()
 
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    api_key_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key_id       TEXT NOT NULL UNIQUE,
-                    key_hash     TEXT NOT NULL UNIQUE,
-                    role         TEXT NOT NULL,
-                    scopes       TEXT NOT NULL, -- JSON array or CSV
-                    is_active    INTEGER NOT NULL DEFAULT 1,
-                    created_at   TEXT NOT NULL,
-                    last_used_at TEXT,
-                    revoked_at   TEXT
-                );
-                """
+            cur = self._execute(
+                conn,
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND table_name = 'api_keys';",
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_keyid ON api_keys(key_id);")
-            conn.commit()
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(
+                    "Table 'api_keys' is missing. Run migrations first: alembic upgrade head"
+                )
 
     def ensure_init(self) -> None:
         """One-time init (lazy)."""
@@ -156,6 +170,7 @@ class AuthStore:
         - If AUTH is disabled -> returns a synthetic principal
         - If AUTH is enabled -> validates key + attaches request.state.principal
         """
+
         def _dep(request: Request) -> ApiPrincipal:
             if not settings.AUTH_ENABLED:
                 principal = ApiPrincipal(api_key_id=0, key_id="anonymous", role="anonymous", scopes=set())
@@ -209,11 +224,12 @@ class AuthStore:
         kh = self.compute_key_hash(api_key, pepper)
 
         with self._connect() as conn:
-            row = conn.execute(
+            row = self._execute(
+                conn,
                 """
                 SELECT api_key_id, key_id, role, scopes, is_active
                 FROM api_keys
-                WHERE key_hash = ?
+                WHERE key_hash = %s
                 LIMIT 1;
                 """,
                 (kh,),
@@ -226,8 +242,9 @@ class AuthStore:
 
             # Update last_used_at (best-effort)
             try:
-                conn.execute(
-                    "UPDATE api_keys SET last_used_at = ? WHERE api_key_id = ?;",
+                self._execute(
+                    conn,
+                    "UPDATE api_keys SET last_used_at = %s WHERE api_key_id = %s;",
                     (_utc_now_iso(), int(row["api_key_id"])),
                 )
                 conn.commit()
@@ -287,20 +304,28 @@ class AuthStore:
             scopes_json = json.dumps(scopes_list, ensure_ascii=False)
 
             try:
-                cur = conn.execute(
+                row = self._execute(
+                    conn,
                     """
                     INSERT INTO api_keys (key_id, key_hash, role, scopes, is_active, created_at)
-                    VALUES (?, ?, ?, ?, 1, ?);
+                    VALUES (%s, %s, %s, %s, 1, %s)
+                    RETURNING api_key_id;
                     """,
                     (key_id, kh, role, scopes_json, created_at),
-                )
+                ).fetchone()
                 conn.commit()
-            except sqlite3.IntegrityError as e:
-                raise ValueError(
-                    f"Failed to create key. Probably duplicate key_id. Details: {e}"
-                ) from e
+            except Exception as e:
+                # PostgreSQL unique violation SQLSTATE
+                sqlstate = getattr(e, "sqlstate", None) or getattr(getattr(e, "__cause__", None), "sqlstate", None)
+                if sqlstate == "23505":
+                    raise ValueError(
+                        "Failed to create key. Probably duplicate key_id or key hash."
+                    ) from e
+                raise
 
-            api_key_id = int(cur.lastrowid)
+            if row is None:
+                raise RuntimeError("Failed to insert API key row.")
+            api_key_id = int(row["api_key_id"])
 
         principal = ApiPrincipal(
             api_key_id=api_key_id,
@@ -314,41 +339,44 @@ class AuthStore:
         """Revokes key by key_id. Returns True if updated."""
         self.ensure_init()
         with self._connect() as conn:
-            cur = conn.execute(
+            cur = self._execute(
+                conn,
                 """
                 UPDATE api_keys
-                SET is_active = 0, revoked_at = ?
-                WHERE key_id = ? AND is_active = 1;
+                SET is_active = 0, revoked_at = %s
+                WHERE key_id = %s AND is_active = 1;
                 """,
                 (_utc_now_iso(), key_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            return (cur.rowcount or 0) > 0
 
     def list_api_keys(self) -> List[Dict[str, Any]]:
         """Lists all keys (for admin/CLI tooling)."""
         self.ensure_init()
         with self._connect() as conn:
-            rows = conn.execute(
+            rows = self._execute(
+                conn,
                 """
                 SELECT api_key_id, key_id, role, scopes, is_active, created_at, last_used_at, revoked_at
                 FROM api_keys
                 ORDER BY api_key_id ASC;
-                """
+                """,
             ).fetchall()
 
         out: List[Dict[str, Any]] = []
-        for r in rows:
+        for r in list(rows or []):
+            rr: Mapping[str, Any] = r
             out.append(
                 {
-                    "api_key_id": int(r["api_key_id"]),
-                    "key_id": str(r["key_id"]),
-                    "role": str(r["role"]),
-                    "scopes": str(r["scopes"]),
-                    "is_active": bool(int(r["is_active"])),
-                    "created_at": r["created_at"],
-                    "last_used_at": r["last_used_at"],
-                    "revoked_at": r["revoked_at"],
+                    "api_key_id": int(rr["api_key_id"]),
+                    "key_id": str(rr["key_id"]),
+                    "role": str(rr["role"]),
+                    "scopes": str(rr["scopes"]),
+                    "is_active": bool(int(rr["is_active"])),
+                    "created_at": rr["created_at"],
+                    "last_used_at": rr["last_used_at"],
+                    "revoked_at": rr["revoked_at"],
                 }
             )
         return out

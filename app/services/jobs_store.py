@@ -3,17 +3,22 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.auth_store import ApiPrincipal
 
 logger = logging.getLogger(__name__)
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # pragma: no cover - optional dependency
+    psycopg = None  # type: ignore[assignment]
+    dict_row = None  # type: ignore[assignment]
 
 
 # ---- status model ----
@@ -55,7 +60,6 @@ def _json_loads(s: Optional[str]) -> Any:
     try:
         return json.loads(s)
     except Exception:
-        # Do not crash on malformed JSON, but leave a trace in logs for debugging.
         logger.debug("Failed to json.loads(%r)", s, exc_info=True)
         return None
 
@@ -91,85 +95,65 @@ class JobRecord:
 
 
 class JobsStore:
-
     """
-    Minimal SQLite job store.
+    PostgreSQL-backed jobs store.
 
-    Principles:
-    - One connection per call (safe enough for FastAPI + background tasks).
-    - Strict status transitions: terminal states are not overwritten.
-    - cancel_requested is a flag that the runner must respect.
+    Notes:
+    - Expects PostgreSQL DSN in constructor.
+    - Uses one connection per call.
     """
 
-    def __init__(self, db_path: str) -> None:
-        self._db_path = str(db_path)
+    def __init__(self, database_url: str) -> None:
+        self._database_url = str(database_url or "").strip()
+        if not (
+            self._database_url.startswith("postgresql://")
+            or self._database_url.startswith("postgres://")
+            or self._database_url.startswith("postgresql+psycopg://")
+        ):
+            raise RuntimeError(
+                "JobsStore requires PostgreSQL DATABASE_URL "
+                "(expected postgresql://..., postgres://... or postgresql+psycopg://...)."
+            )
         self._init_lock = threading.Lock()
         self._initialized = False
 
-    def _ensure_db_dir(self) -> None:
-        Path(self._db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    def _connect(self) -> Any:
+        if psycopg is None:
+            raise RuntimeError(
+                "JobsStore requires psycopg. Install dependency: psycopg[binary]>=3.2,<4"
+            )
+        dsn = self._database_url
+        if dsn.startswith("postgresql+psycopg://"):
+            dsn = "postgresql://" + dsn[len("postgresql+psycopg://") :]
+        return psycopg.connect(  # type: ignore[union-attr]
+            dsn,
+            connect_timeout=10,
+            row_factory=dict_row,
+        )
 
-    def _connect(self) -> sqlite3.Connection:
-        self._ensure_db_dir()
-        conn = sqlite3.connect(self._db_path, timeout=10, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        # Safer defaults for concurrent read/write.
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-        return conn
+    def _execute(self, conn: Any, query: str, args: Sequence[Any] = ()) -> Any:
+        return conn.execute(query, tuple(args))
+
+    def _fetchone(self, conn: Any, query: str, args: Sequence[Any] = ()) -> Optional[Mapping[str, Any]]:
+        return self._execute(conn, query, args).fetchone()
+
+    def _fetchall(self, conn: Any, query: str, args: Sequence[Any] = ()) -> List[Mapping[str, Any]]:
+        rows = self._execute(conn, query, args).fetchall()
+        return list(rows or [])
 
     def init(self) -> None:
+        # Runtime init is intentionally minimal; Alembic should own schema lifecycle.
         with self._connect() as conn:
-            # NOTE: The CHECK constraint applies to newly created DBs. If the table already exists,
-            # SQLite cannot easily "add a constraint" without a migration, so this remains best-effort.
-            conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS jobs (
-                    job_id           TEXT PRIMARY KEY,
-                    kind             TEXT NOT NULL,
-                    status           TEXT NOT NULL
-                        CHECK (status IN ('{STATUS_QUEUED}','{STATUS_RUNNING}','{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}')),
-                    created_at       TEXT NOT NULL,
-                    updated_at       TEXT NOT NULL,
-                    started_at       TEXT,
-                    finished_at      TEXT,
-                    owner_key_id     TEXT,
-                    owner_role       TEXT,
-                    owner_scopes     TEXT NOT NULL,  -- JSON array
-
-                    cancel_requested INTEGER NOT NULL DEFAULT 0
-                        CHECK (cancel_requested IN (0,1)),
-                    request_json       TEXT NOT NULL,  -- JSON object (job input / params)
-                    progress_json      TEXT,           -- JSON object (small progress marker)
-                    error_json         TEXT,           -- JSON object (small error summary)
-
-                    -- Thin results: keep only pointer + summary in JobsStore.
-                    result_ref         TEXT,           -- artifact key/path with full result JSON
-                    result_meta_json   TEXT,           -- JSON object (small summary)
-                    result_bytes       INTEGER,
-                    result_sha256      TEXT,
-                    error_ref          TEXT            -- artifact key/path with full error details
-                );
-                """
+            cur = self._execute(
+                conn,
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND table_name = 'jobs';",
             )
-
-            # Best-effort migrations for existing DBs (SQLite has no ALTER COLUMN / constraints).
-            cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs);").fetchall()}
-
-            def _add(col: str, ddl: str) -> None:
-                if col not in cols:
-                    conn.execute(ddl)
-
-            _add("result_ref", "ALTER TABLE jobs ADD COLUMN result_ref TEXT;")
-            _add("result_meta_json", "ALTER TABLE jobs ADD COLUMN result_meta_json TEXT;")
-            _add("result_bytes", "ALTER TABLE jobs ADD COLUMN result_bytes INTEGER;")
-            _add("result_sha256", "ALTER TABLE jobs ADD COLUMN result_sha256 TEXT;")
-            _add("error_ref", "ALTER TABLE jobs ADD COLUMN error_ref TEXT;")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner_key_id);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);")
-            conn.commit()
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(
+                    "Table 'jobs' is missing. Run migrations first: alembic upgrade head"
+                )
 
     def ensure_init(self) -> None:
         if self._initialized:
@@ -182,13 +166,12 @@ class JobsStore:
 
     # ---- helpers ----
 
-    def _row_to_record(self, r: sqlite3.Row) -> JobRecord:
+    def _row_to_record(self, r: Mapping[str, Any]) -> JobRecord:
         keys = set(r.keys())
         result_ref = str(r["result_ref"]) if ("result_ref" in keys and r["result_ref"]) else None
         error_ref = str(r["error_ref"]) if ("error_ref" in keys and r["error_ref"]) else None
 
         result_meta = _json_loads(r["result_meta_json"]) if ("result_meta_json" in keys and r["result_meta_json"]) else None
-
         result_bytes = int(r["result_bytes"]) if ("result_bytes" in keys and r["result_bytes"] is not None) else None
         result_sha256 = str(r["result_sha256"]) if ("result_sha256" in keys and r["result_sha256"]) else None
 
@@ -223,7 +206,8 @@ class JobsStore:
         now = _utc_now_iso()
 
         with self._connect() as conn:
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 INSERT INTO jobs (
                     job_id, kind, status,
@@ -231,7 +215,7 @@ class JobsStore:
                     owner_key_id, owner_role, owner_scopes,
                     cancel_requested,
                     request_json, progress_json, error_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL);
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, %s, NULL, NULL);
                 """,
                 (
                     job_id,
@@ -247,14 +231,14 @@ class JobsStore:
             )
             conn.commit()
 
-            row = conn.execute("SELECT * FROM jobs WHERE job_id = ? LIMIT 1;", (job_id,)).fetchone()
+            row = self._fetchone(conn, "SELECT * FROM jobs WHERE job_id = %s LIMIT 1;", (job_id,))
             assert row is not None
             return self._row_to_record(row)
 
     def get_job(self, job_id: str) -> Optional[JobRecord]:
         self.ensure_init()
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM jobs WHERE job_id = ? LIMIT 1;", (job_id,)).fetchone()
+            row = self._fetchone(conn, "SELECT * FROM jobs WHERE job_id = %s LIMIT 1;", (job_id,))
             return self._row_to_record(row) if row else None
 
     def list_jobs(
@@ -271,55 +255,49 @@ class JobsStore:
         args: List[Any] = []
 
         if owner_key_id:
-            conds.append("owner_key_id = ?")
+            conds.append("owner_key_id = %s")
             args.append(owner_key_id)
         if status:
-            conds.append("status = ?")
+            conds.append("status = %s")
             args.append(status)
 
         if conds:
             q += " WHERE " + " AND ".join(conds)
 
-        q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        q += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
         args.extend([int(limit), int(offset)])
 
         with self._connect() as conn:
-            rows = conn.execute(q, tuple(args)).fetchall()
+            rows = self._fetchall(conn, q, tuple(args))
             return [self._row_to_record(r) for r in rows]
 
     def mark_running(self, job_id: str) -> None:
-        """
-        queued -> running
-
-        If cancellation was already requested (cancel_requested=1), transition queued -> canceled immediately.
-        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
-            # If the user requested cancellation before the job started, cancel immediately.
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
                     cancel_requested = 1
-                WHERE job_id = ?
-                  AND status = ?
+                WHERE job_id = %s
+                  AND status = %s
                   AND cancel_requested = 1;
                 """,
                 (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED),
             )
-
-            # Normal start
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    started_at = COALESCE(started_at, ?)
-                WHERE job_id = ?
-                  AND status = ?
+                SET status = %s,
+                    updated_at = %s,
+                    started_at = COALESCE(started_at, %s)
+                WHERE job_id = %s
+                  AND status = %s
                   AND cancel_requested = 0;
                 """,
                 (STATUS_RUNNING, now, now, job_id, STATUS_QUEUED),
@@ -335,22 +313,16 @@ class JobsStore:
         result_bytes: Optional[int] = None,
         result_sha256: Optional[str] = None,
     ) -> None:
-        """running -> succeeded (thin result)
-
-        Stores only:
-          - result_ref (artifact key/path with full JSON)
-          - result_meta_json (small summary)
-        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
-            # If cancellation was requested during execution, finish as canceled.
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
                     cancel_requested = 1,
                     result_ref = NULL,
                     result_meta_json = NULL,
@@ -358,28 +330,28 @@ class JobsStore:
                     result_sha256 = NULL,
                     error_json = NULL,
                     error_ref = NULL
-                WHERE job_id = ?
-                  AND status = ?
+                WHERE job_id = %s
+                  AND status = %s
                   AND cancel_requested = 1;
                 """,
                 (STATUS_CANCELED, now, now, job_id, STATUS_RUNNING),
             )
 
-            # Mark success only if truly running and not canceled.
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
-                    result_ref = ?,
-                    result_meta_json = ?,
-                    result_bytes = ?,
-                    result_sha256 = ?,
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
+                    result_ref = %s,
+                    result_meta_json = %s,
+                    result_bytes = %s,
+                    result_sha256 = %s,
                     error_json = NULL,
                     error_ref = NULL
-                WHERE job_id = ?
-                  AND status = ?
+                WHERE job_id = %s
+                  AND status = %s
                   AND cancel_requested = 0;
                 """,
                 (
@@ -397,22 +369,16 @@ class JobsStore:
             conn.commit()
 
     def mark_failed(self, job_id: str, error: Dict[str, Any], *, error_ref: Optional[str] = None) -> None:
-        """
-        queued/running -> failed
-
-        Does not overwrite terminal states.
-        If cancel_requested=1, prefer transitioning to canceled.
-        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
-            # If cancellation was requested, treat it as canceled rather than failed.
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
                     cancel_requested = 1,
                     result_ref = NULL,
                     result_meta_json = NULL,
@@ -420,28 +386,28 @@ class JobsStore:
                     result_sha256 = NULL,
                     error_json = NULL,
                     error_ref = NULL
-                WHERE job_id = ?
-                  AND status IN (?,?)
+                WHERE job_id = %s
+                  AND status IN (%s,%s)
                   AND cancel_requested = 1;
                 """,
                 (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
 
-            # Mark failure only if not canceled and not already terminal.
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
                     result_ref = NULL,
                     result_meta_json = NULL,
                     result_bytes = NULL,
                     result_sha256 = NULL,
-                    error_json = ?,
-                    error_ref = ?
-                WHERE job_id = ?
-                  AND status IN (?,?)
+                    error_json = %s,
+                    error_ref = %s
+                WHERE job_id = %s
+                  AND status IN (%s,%s)
                   AND cancel_requested = 0;
                 """,
                 (
@@ -458,40 +424,36 @@ class JobsStore:
             conn.commit()
 
     def mark_canceled(self, job_id: str) -> None:
-        """
-        queued/running -> canceled
-        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
                     cancel_requested = 1
-                    WHERE job_id = ?
-                  AND status IN (?, ?);
+                WHERE job_id = %s
+                  AND status IN (%s, %s);
                 """,
                 (STATUS_CANCELED, now, now, job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
             conn.commit()
 
     def set_progress(self, job_id: str, progress: Dict[str, Any]) -> None:
-        """
-        Progress updates are allowed only while the job is not finished.
-        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
-                SET updated_at = ?,
-                    progress_json = ?
-                WHERE job_id = ?
-                  AND status IN (?, ?)
+                SET updated_at = %s,
+                    progress_json = %s
+                WHERE job_id = %s
+                  AND status IN (%s, %s)
                   AND finished_at IS NULL;
                 """,
                 (now, _json_dumps(progress or {}), job_id, STATUS_QUEUED, STATUS_RUNNING),
@@ -499,20 +461,17 @@ class JobsStore:
             conn.commit()
 
     def request_cancel(self, job_id: str) -> None:
-        """
-        Request cancellation. This does not change the status by itself.
-        The runner must check cancel_requested and terminate accordingly.
-        """
         self.ensure_init()
         now = _utc_now_iso()
         with self._connect() as conn:
-            conn.execute(
+            self._execute(
+                conn,
                 """
                 UPDATE jobs
                 SET cancel_requested = 1,
-                    updated_at = ?
-                WHERE job_id = ?
-                  AND status IN (?, ?);
+                    updated_at = %s
+                WHERE job_id = %s
+                  AND status IN (%s, %s);
                 """,
                 (now, job_id, STATUS_QUEUED, STATUS_RUNNING),
             )
@@ -524,13 +483,6 @@ class JobsStore:
         include_queued: bool = False,
         reason: str = "stale_after_restart",
     ) -> int:
-        """
-        Mark jobs left in 'running' (and optionally 'queued') after a process restart.
-        Returns the number of affected rows.
-
-        Recommended: call this on startup ONLY for a local/in-process runner.
-        For a Celery backend, you typically do NOT want to mark queued/running jobs as stale.
-        """
         self.ensure_init()
         now = _utc_now_iso()
 
@@ -544,33 +496,33 @@ class JobsStore:
         if include_queued:
             statuses.append(STATUS_QUEUED)
 
-        q_marks = ",".join(["?"] * len(statuses))
+        q_marks = ",".join(["%s"] * len(statuses))
 
         with self._connect() as conn:
-            # 1) running/queued + cancel_requested -> canceled
-            cur1 = conn.execute(
+            cur1 = self._execute(
+                conn,
                 f"""
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
                     cancel_requested = 1
-                    WHERE status IN ({q_marks})
+                WHERE status IN ({q_marks})
                   AND cancel_requested = 1
                   AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
                 """,
                 (STATUS_CANCELED, now, now, *statuses),
             )
 
-            # 2) remaining running/queued -> failed (stale)
-            cur2 = conn.execute(
+            cur2 = self._execute(
+                conn,
                 f"""
                 UPDATE jobs
-                SET status = ?,
-                    updated_at = ?,
-                    finished_at = COALESCE(finished_at, ?),
-                    error_json = ?
-                    WHERE status IN ({q_marks})
+                SET status = %s,
+                    updated_at = %s,
+                    finished_at = COALESCE(finished_at, %s),
+                    error_json = %s
+                WHERE status IN ({q_marks})
                   AND cancel_requested = 0
                   AND status NOT IN ('{STATUS_SUCCEEDED}','{STATUS_FAILED}','{STATUS_CANCELED}');
                 """,

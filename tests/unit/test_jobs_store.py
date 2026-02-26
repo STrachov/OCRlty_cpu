@@ -1,4 +1,8 @@
-﻿from app.auth_store import ApiPrincipal
+import os
+
+import pytest
+
+from app.auth_store import ApiPrincipal
 from app.services.jobs_store import JobsStore
 
 
@@ -6,8 +10,17 @@ def _principal() -> ApiPrincipal:
     return ApiPrincipal(api_key_id=1, key_id="k1", role="user", scopes={"extract:run"})
 
 
-def test_job_lifecycle_success(tmp_jobs_db_path):
-    store = JobsStore(tmp_jobs_db_path)
+def test_jobs_store_requires_postgres_url():
+    with pytest.raises(RuntimeError):
+        JobsStore("sqlite:///tmp/jobs.db")
+
+
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+def test_job_lifecycle_success():
+    store = JobsStore(TEST_DATABASE_URL or "")
     job = store.create_job(kind="extract", request={"task_id": "receipt_fields_v1"}, principal=_principal())
 
     assert job.status == "queued"
@@ -24,8 +37,9 @@ def test_job_lifecycle_success(tmp_jobs_db_path):
     assert j3.result_ref == "jobs/2026-02-25/x.json"
 
 
-def test_request_cancel_and_mark_canceled(tmp_jobs_db_path):
-    store = JobsStore(tmp_jobs_db_path)
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+def test_request_cancel_and_mark_canceled():
+    store = JobsStore(TEST_DATABASE_URL or "")
     job = store.create_job(kind="extract", request={}, principal=_principal())
 
     store.request_cancel(job.job_id)
@@ -37,8 +51,9 @@ def test_request_cancel_and_mark_canceled(tmp_jobs_db_path):
     assert j2.cancel_requested is True
 
 
-def test_mark_stale_running_as_failed(tmp_jobs_db_path):
-    store = JobsStore(tmp_jobs_db_path)
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+def test_mark_stale_running_as_failed():
+    store = JobsStore(TEST_DATABASE_URL or "")
     job = store.create_job(kind="extract", request={}, principal=_principal())
     store.mark_running(job.job_id)
 

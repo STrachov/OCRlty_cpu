@@ -16,3 +16,10 @@ boto3>=1.34,<2
 
 # Optional (если будут UploadFile / multipart формы)
 python-multipart>=0.0.9,<1
+
+# PostgreSQL driver
+psycopg[binary]>=3.2,<4
+
+# DB stack / migrations
+SQLAlchemy>=2,<3
+alembic>=1.13,<2

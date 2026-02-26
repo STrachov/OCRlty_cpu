@@ -66,7 +66,7 @@ INFERENCE_BACKEND=mock
 
 AUTH_ENABLED=1
 API_KEY_PEPPER=change-me
-AUTH_DB_PATH=/data/auth/auth.db
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/ocrlty
 
 # куда писать артефакты локально (если не S3)
 ARTIFACTS_DIR=/data/artifacts
@@ -97,9 +97,14 @@ LOG_LEVEL=INFO
 LOG_FORMAT=json
 ```
 
+Apply migrations before starting app/worker:
+```bash
+alembic upgrade head
+```
+
 ---
 
-## 4) Аутентификация (SQLite auth DB)
+## 4) Аутентификация (PostgreSQL auth DB)
 
 Ключ передаётся:
 - `Authorization: Bearer <api_key>` (канонично)
@@ -109,7 +114,7 @@ LOG_FORMAT=json
 ```bash
 python -m app.auth_cli init-db
 # или явно:
-python -m app.auth_cli --db /data/auth/auth.db init-db
+python -m app.auth_cli --database-url "postgresql+psycopg://postgres:postgres@localhost:5432/ocrlty" init-db
 ```
 
 ### Создать ключ

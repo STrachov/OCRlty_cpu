@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
 
         # --- Jobs store/runner (best-effort) ---
         try:
-            js = JobsStore(settings.JOBS_DB_PATH)
+            js = JobsStore(settings.DATABASE_URL)
             js.ensure_init()
             app.state.jobs_store = js
 
