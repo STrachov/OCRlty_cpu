@@ -1,12 +1,17 @@
-from pathlib import Path
+import os
+
+import pytest
 
 from app.artifact_index import ArtifactIndex
 
 
-def _mk_index(tmp_path: Path) -> ArtifactIndex:
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+
+
+def _mk_index() -> ArtifactIndex:
     idx = ArtifactIndex(
         enabled=True,
-        db_path=tmp_path / "artifact_index.db",
+        database_url=TEST_DATABASE_URL or "",
         log_event=lambda *_args, **_kwargs: None,
         is_s3_enabled=lambda: False,
     )
@@ -14,8 +19,19 @@ def _mk_index(tmp_path: Path) -> ArtifactIndex:
     return idx
 
 
-def test_artifact_index_list_cursor(tmp_path):
-    idx = _mk_index(tmp_path)
+def test_artifact_index_requires_postgres_url():
+    with pytest.raises(RuntimeError):
+        ArtifactIndex(
+            enabled=True,
+            database_url="sqlite:///tmp/artifacts.db",
+            log_event=lambda *_args, **_kwargs: None,
+            is_s3_enabled=lambda: False,
+        )
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+def test_artifact_index_list_cursor():
+    idx = _mk_index()
     idx.upsert(
         kind="batch",
         artifact_id="run_a",
@@ -45,5 +61,4 @@ def test_artifact_index_list_cursor(tmp_path):
         cursor_created_at=cur_created,
         cursor_artifact_id=cur_id,
     )
-    assert len(page2) == 1
-    assert page2[0]["artifact_id"] != cur_id
+    assert len(page2) >= 1

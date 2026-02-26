@@ -25,7 +25,6 @@ class Settings(BaseSettings):
 
     # --- App ---
     ARTIFACTS_DIR: str = "/data/artifacts"
-    ARTIFACT_INDEX_DB_PATH: str ="/data/db/artifacts.db"
 
     VLLM_MODEL: str = "Qwen/Qwen3-VL-8B-Instruct"
     VLLM_BASE_URL: str = "http://127.0.0.1:8000"

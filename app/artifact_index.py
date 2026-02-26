@@ -1,5 +1,5 @@
 """
-Artifact index (SQLite) for fast lookup of artifacts by id without scanning date prefixes.
+Artifact index (PostgreSQL) for fast lookup of artifacts by id without scanning date prefixes.
 
 - Stores only metadata (no blobs). The artifacts themselves remain in filesystem/S3.
 - Best-effort: indexing failures must never break request handling.
@@ -8,11 +8,17 @@ Artifact index (SQLite) for fast lookup of artifacts by id without scanning date
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
+
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # pragma: no cover - optional dependency
+    psycopg = None  # type: ignore[assignment]
+    dict_row = None  # type: ignore[assignment]
 
 
 class ArtifactIndex:
@@ -20,80 +26,76 @@ class ArtifactIndex:
         self,
         *,
         enabled: bool,
-        db_path: Path,
+        database_url: str,
         log_event: Callable[..., None],
         is_s3_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self._initialized = False
         self._enabled = bool(enabled)
-        self._db_path = Path(db_path)
+        self._database_url = str(database_url or "").strip()
         self._log_event = log_event
         self._is_s3_enabled = is_s3_enabled or (lambda: False)
         self._lock = threading.Lock()
 
+        if self._enabled and not (
+            self._database_url.startswith("postgresql://")
+            or self._database_url.startswith("postgres://")
+            or self._database_url.startswith("postgresql+psycopg://")
+        ):
+            raise RuntimeError(
+                "ArtifactIndex requires PostgreSQL DATABASE_URL "
+                "(expected postgresql://..., postgres://... or postgresql+psycopg://...)."
+            )
+
     def enabled(self) -> bool:
         return bool(self._enabled)
-    
+
     def _ensure_init(self) -> None:
         if self._initialized:
             return
         self.init()
         self._initialized = True
 
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
+    def _connect(self) -> Any:
+        if psycopg is None:
+            raise RuntimeError(
+                "ArtifactIndex requires psycopg. Install dependency: psycopg[binary]>=3.2,<4"
+            )
+        dsn = self._database_url
+        if dsn.startswith("postgresql+psycopg://"):
+            dsn = "postgresql://" + dsn[len("postgresql+psycopg://") :]
+        return psycopg.connect(  # type: ignore[union-attr]
+            dsn,
+            connect_timeout=10,
+            row_factory=dict_row,
+        )
+
+    def _execute(self, conn: Any, query: str, args: tuple[Any, ...] = ()) -> Any:
+        return conn.execute(query, args)
 
     def init(self) -> None:
-        """Initialize DB schema. Safe to call multiple times."""
+        """Validate schema. Migrations are expected to be applied via Alembic."""
         if not self.enabled():
             return
         try:
-            self._db_path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
-                conn = sqlite3.connect(str(self._db_path), timeout=30.0)
-                try:
-                    conn.execute("PRAGMA journal_mode=WAL;")
-                    conn.execute("PRAGMA synchronous=NORMAL;")
-                    conn.execute("PRAGMA busy_timeout=30000;")
-                    conn.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS artifact_index (
-                            kind TEXT NOT NULL,
-                            artifact_id TEXT NOT NULL,
-                            owner_key_id TEXT,
-                            day TEXT,
-                            storage TEXT NOT NULL,
-                            full_ref TEXT NOT NULL,
-                            rel_ref TEXT NOT NULL,
-                            created_at TEXT NOT NULL,
-                            PRIMARY KEY (kind, artifact_id)
-                        );
-                        """
+                with self._connect() as conn:
+                    cur = self._execute(
+                        conn,
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema = current_schema() AND table_name = 'artifact_index';",
                     )
-                    conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_artifact_index_owner_kind_day "
-                        "ON artifact_index(owner_key_id, kind, day);"
-                    )
-                    conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_artifact_index_kind_created_id "
-                        "ON artifact_index(kind, created_at DESC, artifact_id DESC);"
-                    )
-                    conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_artifact_index_owner_kind_created_id "
-                        "ON artifact_index(owner_key_id, kind, created_at DESC, artifact_id DESC);"
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
+                    row = cur.fetchone()
+                    if row is None:
+                        raise RuntimeError(
+                            "Table 'artifact_index' is missing. Run migrations first: alembic upgrade head"
+                        )
         except Exception as e:
-            # Best-effort: do not fail app startup.
             try:
                 self._log_event(
                     logging.WARNING,
                     "artifact_index_init_failed",
                     error=str(e),
-                    db_path=str(self._db_path),
                 )
             except Exception:
                 pass
@@ -116,26 +118,23 @@ class ArtifactIndex:
             # In S3 mode we store keys (no leading "/"). In local mode we store absolute paths.
             storage = "s3" if (self._is_s3_enabled() and full_ref and not str(full_ref).startswith("/")) else "local"
             with self._lock:
-                conn = sqlite3.connect(str(self._db_path), timeout=30.0)
-                try:
-                    conn.execute("PRAGMA busy_timeout=30000;")
-                    conn.execute(
+                with self._connect() as conn:
+                    self._execute(
+                        conn,
                         """
                         INSERT INTO artifact_index (kind, artifact_id, owner_key_id, day, storage, full_ref, rel_ref, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT(kind, artifact_id) DO UPDATE SET
-                            owner_key_id=COALESCE(excluded.owner_key_id, artifact_index.owner_key_id),
-                            day=excluded.day,
-                            storage=excluded.storage,
-                            full_ref=excluded.full_ref,
-                            rel_ref=excluded.rel_ref,
-                            created_at=excluded.created_at
+                            owner_key_id=COALESCE(EXCLUDED.owner_key_id, artifact_index.owner_key_id),
+                            day=EXCLUDED.day,
+                            storage=EXCLUDED.storage,
+                            full_ref=EXCLUDED.full_ref,
+                            rel_ref=EXCLUDED.rel_ref,
+                            created_at=EXCLUDED.created_at
                         """,
                         (kind, artifact_id, owner_key_id, day, storage, full_ref, rel_ref, created_at),
                     )
                     conn.commit()
-                finally:
-                    conn.close()
         except Exception as e:
             try:
                 self._log_event(
@@ -154,25 +153,22 @@ class ArtifactIndex:
         try:
             self._ensure_init()
             with self._lock:
-                conn = sqlite3.connect(str(self._db_path), timeout=30.0)
-                try:
-                    conn.execute("PRAGMA busy_timeout=30000;")
-                    row = conn.execute(
+                with self._connect() as conn:
+                    row = self._execute(
+                        conn,
                         "SELECT storage, full_ref, rel_ref, day, owner_key_id "
-                        "FROM artifact_index WHERE kind=? AND artifact_id=?",
+                        "FROM artifact_index WHERE kind=%s AND artifact_id=%s",
                         (kind, artifact_id),
                     ).fetchone()
-                finally:
-                    conn.close()
             if not row:
                 return None
-            storage, full_ref, rel_ref, day, owner_key_id = row
+            rr: Mapping[str, Any] = row
             return {
-                "storage": str(storage or ""),
-                "full_ref": str(full_ref or ""),
-                "rel_ref": str(rel_ref or ""),
-                "day": str(day or ""),
-                "owner_key_id": str(owner_key_id or ""),
+                "storage": str(rr.get("storage") or ""),
+                "full_ref": str(rr.get("full_ref") or ""),
+                "rel_ref": str(rr.get("rel_ref") or ""),
+                "day": str(rr.get("day") or ""),
+                "owner_key_id": str(rr.get("owner_key_id") or ""),
             }
         except Exception as e:
             try:
@@ -193,13 +189,13 @@ class ArtifactIndex:
         try:
             self._ensure_init()
             with self._lock:
-                conn = sqlite3.connect(str(self._db_path), timeout=30.0)
-                try:
-                    conn.execute("PRAGMA busy_timeout=30000;")
-                    conn.execute("DELETE FROM artifact_index WHERE kind=? AND artifact_id=?", (kind, artifact_id))
+                with self._connect() as conn:
+                    self._execute(
+                        conn,
+                        "DELETE FROM artifact_index WHERE kind=%s AND artifact_id=%s",
+                        (kind, artifact_id),
+                    )
                     conn.commit()
-                finally:
-                    conn.close()
         except Exception as e:
             try:
                 self._log_event(
@@ -229,41 +225,38 @@ class ArtifactIndex:
 
             q = (
                 "SELECT kind, artifact_id, owner_key_id, day, storage, full_ref, rel_ref, created_at "
-                "FROM artifact_index WHERE kind = ?"
+                "FROM artifact_index WHERE kind = %s"
             )
             args: List[Any] = [kind]
 
             if owner_key_id is not None:
-                q += " AND owner_key_id = ?"
+                q += " AND owner_key_id = %s"
                 args.append(owner_key_id)
 
             if cursor_created_at and cursor_artifact_id:
-                q += " AND (created_at < ? OR (created_at = ? AND artifact_id < ?))"
+                q += " AND (created_at < %s OR (created_at = %s AND artifact_id < %s))"
                 args.extend([cursor_created_at, cursor_created_at, cursor_artifact_id])
 
-            q += " ORDER BY created_at DESC, artifact_id DESC LIMIT ?"
+            q += " ORDER BY created_at DESC, artifact_id DESC LIMIT %s"
             args.append(lim)
 
             with self._lock:
-                conn = sqlite3.connect(str(self._db_path), timeout=30.0)
-                try:
-                    conn.execute("PRAGMA busy_timeout=30000;")
-                    rows = conn.execute(q, tuple(args)).fetchall()
-                finally:
-                    conn.close()
+                with self._connect() as conn:
+                    rows = self._execute(conn, q, tuple(args)).fetchall()
 
             out: List[Dict[str, str]] = []
-            for row in rows:
+            for row in list(rows or []):
+                rr: Mapping[str, Any] = row
                 out.append(
                     {
-                        "kind": str(row[0] or ""),
-                        "artifact_id": str(row[1] or ""),
-                        "owner_key_id": str(row[2] or ""),
-                        "day": str(row[3] or ""),
-                        "storage": str(row[4] or ""),
-                        "full_ref": str(row[5] or ""),
-                        "rel_ref": str(row[6] or ""),
-                        "created_at": str(row[7] or ""),
+                        "kind": str(rr.get("kind") or ""),
+                        "artifact_id": str(rr.get("artifact_id") or ""),
+                        "owner_key_id": str(rr.get("owner_key_id") or ""),
+                        "day": str(rr.get("day") or ""),
+                        "storage": str(rr.get("storage") or ""),
+                        "full_ref": str(rr.get("full_ref") or ""),
+                        "rel_ref": str(rr.get("rel_ref") or ""),
+                        "created_at": str(rr.get("created_at") or ""),
                     }
                 )
             return out

@@ -4,7 +4,7 @@ app/services/artifacts.py
 Artifact layer:
 - Stores extract/batch/eval artifacts either locally or in S3/R2.
 - Preserves existing helper function names used in the codebase.
-- Adds a best-effort SQLite index for fast lookup by request_id / run_id.
+- Adds a best-effort PostgreSQL index for fast lookup by request_id / run_id.
 
 S3 primitives are implemented in app/services/s3_service.py and imported here.
 """
@@ -32,7 +32,7 @@ from app.services.s3_service import (
 # Used only for converting full S3 key -> relative artifact_rel (strip prefix).
 _S3_PREFIX = (settings.S3_PREFIX or "ocrlty").strip().strip("/")
 
-# Optional SQLite index (safe fallback if module isn't present)
+# Optional PostgreSQL index (safe fallback if module isn't present)
 try:
     from app.artifact_index import ArtifactIndex
 except Exception:  # pragma: no cover
@@ -143,7 +143,7 @@ def artifact_date_from_path(ref: Union[str, Path]) -> Optional[str]:
 
 
 # ---------------------------
-# SQLite index (best-effort)
+# PostgreSQL index (best-effort)
 # ---------------------------
 
 def _index_enabled() -> bool:
@@ -151,9 +151,11 @@ def _index_enabled() -> bool:
     return v not in {"0", "false", "no", "off"}
 
 
-def _index_db_path() -> Path:
-    p = getattr(settings, "ARTIFACT_INDEX_DB_PATH", None) or os.getenv("ARTIFACT_INDEX_DB_PATH") or "/data/db/artifacts.db"
-    return Path(p).expanduser().resolve()
+def _index_database_url() -> str:
+    return str(
+        #os.getenv("ARTIFACT_INDEX_DATABASE_URL") or
+        getattr(settings, "DATABASE_URL", "")
+    ).strip()
 
 
 _index = None
@@ -161,7 +163,7 @@ if ArtifactIndex is not None and _index_enabled():
     try:
         _index = ArtifactIndex(
             enabled=True,
-            db_path=_index_db_path(),
+            database_url=_index_database_url(),
             log_event=lambda level, event, **fields: logging.getLogger("ocrlty").log(level, "%s %s", event, fields),
             is_s3_enabled=s3_enabled,
         )
@@ -410,7 +412,7 @@ def list_batch_artifacts(
     cursor_created_at: Optional[str] = None,
     cursor_run_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, str]], Optional[Tuple[str, str]]]:
-    """List batch artifacts via SQLite index with cursor pagination.
+    """List batch artifacts via artifact index with cursor pagination.
 
     Returns:
       - items: index records (kind/artifact_id/full_ref/rel_ref/created_at/...)
