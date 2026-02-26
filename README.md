@@ -33,7 +33,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload --env-file .e
 
 Проверка:
 ```bash
-curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:8080/v1/health
 ```
 
 ### 2.2 Docker (VPS / локально)
@@ -53,7 +53,7 @@ services:
 ```bash
 docker compose up -d
 docker compose logs -f
-curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:8080/v1/health
 ```
 
 ---
@@ -132,7 +132,7 @@ python -m app.auth_cli create-key --key-id dbg-1 --role debugger --scopes '["ext
 ## 5) API (эндпоинты)
 
 ### 5.1 Core
-- `GET /health` — healthcheck
+- `GET /v1/health` — healthcheck
 - `GET /v1/me` — кто я (проверка auth)
 - `GET /docs` — Swagger UI
 
@@ -152,7 +152,11 @@ python -m app.auth_cli create-key --key-id dbg-1 --role debugger --scopes '["ext
 - `GET /v1/jobs/{job_id}`
 - `POST /v1/jobs/{job_id}/cancel` (best-effort)
 
-### 5.4 Debug (только если `DEBUG_MODE=1` и scopes)
+### 5.4 Runs
+- `GET /v1/runs?limit=...&cursor=...` ? ?????? batch run-?? (cursor = `<created_at>|<run_id>`)
+- `GET /v1/runs/{run_id}` ? ?????? batch artifact
+
+### 5.5 Debug (только если `DEBUG_MODE=1` и scopes)
 - `GET /v1/debug/artifacts?limit=...`
 - `GET /v1/debug/artifacts/{request_id}`
 - `GET /v1/debug/artifacts/{request_id}/raw`
@@ -162,11 +166,13 @@ python -m app.auth_cli create-key --key-id dbg-1 --role debugger --scopes '["ext
 
 ## 6) Важные детали про ответы
 
+- Hard ?????? (HTTP 4xx/5xx) ?????? ? ??????? `{"error": {"code","message","request_id","details"}}`.
+
 - Оркестратор **может вернуть HTTP 200**, даже если inference упал: смотри поле `error` в JSON.
 - `schema_valid=false` + `schema_errors` — модель (или mock) вернула JSON, не проходящий JSON‑schema.
-- `artifact_path`:
-  - в S3‑режиме — ключ `S3_PREFIX/...`
-  - в local‑режиме — абсолютный путь на диске контейнера/хоста
+- `artifact_rel`:
+  - ? S3-?????? ? ???? ??? `S3_PREFIX` (???????? `extracts/YYYY-MM-DD/<id>.json`)
+  - ? local-?????? ? ???? ???????????? `ARTIFACTS_DIR` (???????? `extracts\YYYY-MM-DD\<id>.json`)
 
 ---
 
@@ -189,7 +195,7 @@ $CURL_W = "`nHTTP %{http_code}`n"
 New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
 
 # ====== 0) HEALTH + AUTH ======
-curl.exe -sS -w $CURL_W "$BASE/health"
+curl.exe -sS -w $CURL_W "$BASE/v1/health"
 curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/me"
 
 # ====== 1) SYNC: /v1/extract (локальный файл -> base64) ======
@@ -360,7 +366,7 @@ AUTH="Authorization: Bearer ${APIKEY}"
 mkdir -p ./tmp
 
 # 0) HEALTH + AUTH
-curl -sS "$BASE/health"
+curl -sS "$BASE/v1/health"
 curl -sS -H "$AUTH" "$BASE/v1/me"
 
 # 1) extract (base64)

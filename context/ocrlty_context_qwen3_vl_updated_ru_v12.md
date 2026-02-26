@@ -201,8 +201,11 @@ Orchestrator выполняет:
 
 ## 8) API Orchestrator (порт 8080)
 
+?????? ?????? hard-?????? (HTTP 4xx/5xx): `{"error": {"code","message","request_id","details"}}`.
+
+
 ### 8.1 Health
-`GET /health`
+`GET /v1/health`
 
 ### 8.2 Single extract (оставлен скорее для тестов)
 `POST /v1/extract`
@@ -271,9 +274,11 @@ Orchestrator выполняет:
 
 ### 8.9 Runs API (для UI, batch artifact = продуктовый объект)
 
-- `GET /v1/runs?limit&cursor` — список batch‑прогонов (используем `artifact_index` как run registry v1).
+- `GET /v1/runs?limit&cursor` ? ?????? batch-???????? (run registry = `artifact_index`, cursor pagination).
+  - `cursor` = `<created_at>|<run_id>` (?? `next_cursor` ?????????? ????????)
+  - keyset pagination: `created_at DESC, run_id DESC`
 - `GET /v1/runs/{run_id}` — вернуть **полный batch‑артефакт** (summary + `items[]`), где каждый item содержит минимум для UI: `parsed`, `schema_valid`, `schema_errors`, `error`, `error_history`, `file`, `request_id`, `input_ref`, `artifact_rel`.
-- `GET /v1/artifacts?ref=<artifact_rel>` — drill‑down: вернуть полный JSON extract‑артефакта для конкретного item (auth‑gated, без debug).
+- `(TODO) GET /v1/artifacts?ref=<artifact_rel>` — drill‑down: вернуть полный JSON extract‑артефакта для конкретного item (auth‑gated, без debug).
 
 > Примечание про пагинацию: пока батчи небольшие — UI может получать batch целиком. Когда батчи станут большими, понадобится серверная пагинация/чанкинг (см. TODO P2).
 
@@ -346,7 +351,7 @@ $CURL_W = "`nHTTP %{http_code}`n"
 New-Item -ItemType Directory -Force -Path ".\tmp" | Out-Null
 
 # ====== 0) HEALTH + AUTH ======
-curl.exe -sS -w $CURL_W "$BASE/health"
+curl.exe -sS -w $CURL_W "$BASE/v1/health"
 curl.exe -sS -w $CURL_W -H $AUTH "$BASE/v1/me"
 
 # ====== 1) SYNC: /v1/extract (локальный файл -> base64) ======
@@ -509,7 +514,7 @@ APIKEY="<PASTE_YOUR_API_KEY_HERE>"
 AUTH="Authorization: Bearer ${APIKEY}"
 
 # 0) HEALTH + AUTH
-curl -sS "$BASE/health"
+curl -sS "$BASE/v1/health"
 curl -sS -H "$AUTH" "$BASE/v1/me"
 
 # 1) ASYNC: extract_async (пример с заранее подготовленным base64)
@@ -569,16 +574,16 @@ echo "job_id=$job_id"
 
 ### P0 — UI-ready API (минимум, чтобы начать интерфейс)
 * Под прогоном (run) понимается батч прогон.
-1) **Runs list поверх `artifact_index` (без нового run registry)**. 
+1) (DONE) **Runs list поверх `artifact_index` (без нового run registry)**. 
 - добавить `ArtifactIndex.list(...)`:
   - фильтры: `kind="batch"`, `owner_key_id`, `limit`, `cursor`
   - сортировка по дате создания (как по возрастанию так и по убыванию)
 - эндпоинт:
-  - `GET /v1/runs?limit&cursor&sort=asc` → список прогонов (run_id=`artifact_id`, day, created_at, artifact_ref/rel)
+  - `GET /v1/runs?limit&cursor` ? ?????? ???????? + `next_cursor` (items: `run_id`, `created_at`, `task_id`, `item_count`, `ok_count`, `error_count`, `artifact_rel`)
 
-2) **Run details = полный batch artifact**
+2) (DONE) **Run details = полный batch artifact**
 - эндпоинт:
-  - `GET /v1/runs/{batch_artifact_id}` → вернуть полный JSON батч артефакта (на данный момент он уже содержит нужные данные для UI: `parsed`, `schema_valid`, `schema_errors`, `error`, `error_history`, `file`, `request_id`, `input_ref`, `artifact_rel`)
+  - `GET /v1/runs/{run_id}` → вернуть полный JSON батч артефакта (на данный момент он уже содержит нужные данные для UI: `parsed`, `schema_valid`, `schema_errors`, `error`, `error_history`, `file`, `request_id`, `input_ref`, `artifact_rel`)
   
 3) **Drill-down по одному item (дешёвый вариант, 1 чтение из storage)**
 - эндпоинт:
