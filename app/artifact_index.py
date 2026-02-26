@@ -12,7 +12,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class ArtifactIndex:
@@ -74,6 +74,14 @@ class ArtifactIndex:
                     conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_artifact_index_owner_kind_day "
                         "ON artifact_index(owner_key_id, kind, day);"
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_artifact_index_kind_created_id "
+                        "ON artifact_index(kind, created_at DESC, artifact_id DESC);"
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_artifact_index_owner_kind_created_id "
+                        "ON artifact_index(owner_key_id, kind, created_at DESC, artifact_id DESC);"
                     )
                     conn.commit()
                 finally:
@@ -203,3 +211,71 @@ class ArtifactIndex:
                 )
             except Exception:
                 pass
+
+    def list(
+        self,
+        *,
+        kind: str,
+        limit: int,
+        owner_key_id: Optional[str] = None,
+        cursor_created_at: Optional[str] = None,
+        cursor_artifact_id: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        if not self.enabled():
+            return []
+        try:
+            self._ensure_init()
+            lim = max(1, int(limit))
+
+            q = (
+                "SELECT kind, artifact_id, owner_key_id, day, storage, full_ref, rel_ref, created_at "
+                "FROM artifact_index WHERE kind = ?"
+            )
+            args: List[Any] = [kind]
+
+            if owner_key_id is not None:
+                q += " AND owner_key_id = ?"
+                args.append(owner_key_id)
+
+            if cursor_created_at and cursor_artifact_id:
+                q += " AND (created_at < ? OR (created_at = ? AND artifact_id < ?))"
+                args.extend([cursor_created_at, cursor_created_at, cursor_artifact_id])
+
+            q += " ORDER BY created_at DESC, artifact_id DESC LIMIT ?"
+            args.append(lim)
+
+            with self._lock:
+                conn = sqlite3.connect(str(self._db_path), timeout=30.0)
+                try:
+                    conn.execute("PRAGMA busy_timeout=30000;")
+                    rows = conn.execute(q, tuple(args)).fetchall()
+                finally:
+                    conn.close()
+
+            out: List[Dict[str, str]] = []
+            for row in rows:
+                out.append(
+                    {
+                        "kind": str(row[0] or ""),
+                        "artifact_id": str(row[1] or ""),
+                        "owner_key_id": str(row[2] or ""),
+                        "day": str(row[3] or ""),
+                        "storage": str(row[4] or ""),
+                        "full_ref": str(row[5] or ""),
+                        "rel_ref": str(row[6] or ""),
+                        "created_at": str(row[7] or ""),
+                    }
+                )
+            return out
+        except Exception as e:
+            try:
+                self._log_event(
+                    logging.WARNING,
+                    "artifact_index_list_failed",
+                    kind=kind,
+                    owner_key_id=owner_key_id,
+                    error=str(e),
+                )
+            except Exception:
+                pass
+            return []

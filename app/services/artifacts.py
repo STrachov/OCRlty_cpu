@@ -16,7 +16,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from fastapi import HTTPException
 
@@ -212,6 +212,28 @@ def _index_delete(kind: str, artifact_id: str) -> None:
         pass
 
 
+def _index_list(
+    *,
+    kind: str,
+    limit: int,
+    owner_key_id: Optional[str] = None,
+    cursor_created_at: Optional[str] = None,
+    cursor_artifact_id: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    if _index is None:
+        return []
+    try:
+        return _index.list(
+            kind=kind,
+            limit=limit,
+            owner_key_id=owner_key_id,
+            cursor_created_at=cursor_created_at,
+            cursor_artifact_id=cursor_artifact_id,
+        )
+    except Exception:
+        return []
+
+
 # ---------------------------
 # Save/load artifacts
 # ---------------------------
@@ -379,3 +401,31 @@ def find_batch_artifact_path(run_id: str, *, date: Optional[str] = None, max_day
                 _index_upsert("batch", run_id, ref)
                 return Path(ref)
     return None
+
+
+def list_batch_artifacts(
+    *,
+    limit: int,
+    owner_key_id: Optional[str] = None,
+    cursor_created_at: Optional[str] = None,
+    cursor_run_id: Optional[str] = None,
+) -> Tuple[List[Dict[str, str]], Optional[Tuple[str, str]]]:
+    """List batch artifacts via SQLite index with cursor pagination.
+
+    Returns:
+      - items: index records (kind/artifact_id/full_ref/rel_ref/created_at/...)
+      - next_cursor: (created_at, run_id) or None
+    """
+    lim = max(1, int(limit))
+    rows = _index_list(
+        kind="batch",
+        limit=lim + 1,
+        owner_key_id=owner_key_id,
+        cursor_created_at=cursor_created_at,
+        cursor_artifact_id=cursor_run_id,
+    )
+    if len(rows) <= lim:
+        return rows, None
+    page = rows[:lim]
+    last = page[-1]
+    return page, (str(last.get("created_at") or ""), str(last.get("artifact_id") or ""))
