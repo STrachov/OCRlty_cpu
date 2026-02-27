@@ -456,3 +456,86 @@ HF_TOKEN=
   Для `INFERENCE_BACKEND=mock` удобно добавлять `examples` в schema (например, все ключи → `null`).
 
 ---
+
+## 10) Юнит-тестирование (Windows + PostgreSQL)
+
+Существует 2 группы тестов:
+
+- Быстрые юнит-тесты, не требующие базы данных.
+- Тесты хранилищ (`jobs_store`, `artifact_index`), которым требуется PostgreSQL.  
+  Эти тесты пропускаются, если не задана переменная `TEST_DATABASE_URL`.
+
+### 10.1 Настройка окружения
+
+```powershell
+cd d:\master\OCRlty_cpu
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### 10.2 Быстрый запуск (без обязательной БД)
+
+```powershell
+python -m pytest tests\unit
+```
+
+### 10.3 Полный запуск с PostgreSQL
+
+1. Запустите локальный Postgres:
+
+```powershell
+cd d:\master\OCRlty_cpu\infra\postgres
+docker compose up -d
+docker compose ps
+```
+
+2. Установите переменные окружения для тестов:
+
+```powershell
+cd d:\master\OCRlty_cpu
+$env:TEST_DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/ocrlty"
+$env:DATABASE_URL=$env:TEST_DATABASE_URL
+```
+
+3. Примените миграции:
+
+```powershell
+alembic upgrade head
+```
+
+4. Запустите юнит-тесты:
+
+```powershell
+python -m pytest tests\unit
+```
+
+### 10.4 Запуск одного тестового модуля
+
+```powershell
+python -m pytest tests\unit\test_jobs_store.py
+python -m pytest tests\unit\test_artifact_index.py
+python -m pytest tests\unit\test_artifacts.py
+```
+
+### 10.5 Распространённые проблемы
+
+- `... skipped ... TEST_DATABASE_URL is not set`  
+  Установите `TEST_DATABASE_URL` (см. раздел 10.3).
+- `Table '...' is missing. Run migrations first`  
+  Выполните `alembic upgrade head`.
+- `PermissionError` в `%TEMP%` на Windows  
+  Временно переопределите временные директории перед запуском тестов:
+
+```powershell
+$env:TEMP="d:\master\OCRlty_cpu\.tmp"
+$env:TMP="d:\master\OCRlty_cpu\.tmp"
+New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+python -m pytest tests\unit
+```
+
+### 10.6 Остановка локального Postgres
+
+```powershell
+cd d:\master\OCRlty_cpu\infra\postgres
+docker compose down
+```
