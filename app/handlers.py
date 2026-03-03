@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+import asyncio
 
 from app.auth import ApiPrincipal, require_scopes
 from app.settings import settings
@@ -688,49 +689,56 @@ async def eval_batch_vs_gt(
             gt_missing += 1
 
         # Resolve pred artifact (supports local + S3)
-        pred_obj: Any = _MISSING
-        artifact_ref: Optional[Union[str, Path]] = None
+        #pred_obj: Any = _MISSING
+        #artifact_ref: Optional[Union[str, Path]] = None
 
-        if isinstance(artifact_rel, str) and artifact_rel:
-            rel = Path(artifact_rel)
-            if rel.is_absolute():
-                artifact_ref = _validate_under_any_root(rel, roots=[ARTIFACTS_DIR, DATA_ROOT])
-            else:
-                # Old batch format might omit "extracts/" prefix.
-                if len(rel.parts) >= 1 and DATE_RE.match(rel.parts[0]) and rel.parts[0].count("-") == 2:
-                    rel = Path("extracts") / rel
-                if s3_enabled():
-                    artifact_ref = str(rel).replace("\\", "/")
-                else:
-                    artifact_ref = (ARTIFACTS_DIR / rel).resolve()
-        elif request_id:
-            # Fallback for older batch artifacts without artifact_rel: try resolving by request_id.
-            # This works for both local and S3 (via the artifacts index / S3 existence check).
-            try:
-                from app.services.artifacts import find_artifact_path
-                artifact_ref = find_artifact_path(request_id)
-            except Exception:
-                artifact_ref = None
-
-        if artifact_ref is not None:
-            try:
-                art = read_artifact_json(artifact_ref)
-                pred_obj = (
-                    art.get("parsed")
-                    or art.get("result")
-                    or art.get("data")
-                    or art.get("output")
-                    or art.get("extracted")
-                    or _MISSING
-                )
-                if pred_obj is not _MISSING:
-                    pred_found += 1
-                else:
-                    pred_missing += 1
-            except Exception:
-                pred_missing += 1
+        pred_obj: Any = it.get("parsed", _MISSING)
+        if pred_obj is not _MISSING:
+            pred_found += 1
         else:
+            # fallback: read from extract artifact by artifact_rel / request_id (optional)
             pred_missing += 1
+
+        # if isinstance(artifact_rel, str) and artifact_rel:
+        #     rel = Path(artifact_rel)
+        #     if rel.is_absolute():
+        #         artifact_ref = _validate_under_any_root(rel, roots=[ARTIFACTS_DIR, DATA_ROOT])
+        #     else:
+        #         # Old batch format might omit "extracts/" prefix.
+        #         if len(rel.parts) >= 1 and DATE_RE.match(rel.parts[0]) and rel.parts[0].count("-") == 2:
+        #             rel = Path("extracts") / rel
+        #         if s3_enabled():
+        #             artifact_ref = str(rel).replace("\\", "/")
+        #         else:
+        #             artifact_ref = (ARTIFACTS_DIR / rel).resolve()
+        # elif request_id:
+        #     # Fallback for older batch artifacts without artifact_rel: try resolving by request_id.
+        #     # This works for both local and S3 (via the artifacts index / S3 existence check).
+        #     try:
+        #         from app.services.artifacts import find_artifact_path
+        #         artifact_ref = find_artifact_path(request_id)
+        #     except Exception:
+        #         artifact_ref = None
+
+        # if artifact_ref is not None:
+        #     try:
+        #         art = read_artifact_json(artifact_ref)
+        #         pred_obj = (
+        #             art.get("parsed")
+        #             or art.get("result")
+        #             or art.get("data")
+        #             or art.get("output")
+        #             or art.get("extracted")
+        #             or _MISSING
+        #         )
+        #         if pred_obj is not _MISSING:
+        #             pred_found += 1
+        #         else:
+        #             pred_missing += 1
+        #     except Exception:
+        #         pred_missing += 1
+        # else:
+        #     pred_missing += 1
 
         gt_payload: Any = gt_rec if gt_rec is not None else _MISSING
         if gt_payload is not _MISSING and req.gt_record_key:
@@ -817,8 +825,8 @@ async def eval_batch_vs_gt(
     }
 
     owner = (batch_obj.get("auth") or {}).get("key_id")
-    eval_artifact_ref = await save_eval_artifact(payload, owner)
-
+    #eval_artifact_ref = await save_eval_artifact(payload, owner)
+    eval_artifact_ref = await asyncio.to_thread(save_eval_artifact, payload, owner)
     return EvalBatchVsGTResponse(
         eval_id=eval_id,
         created_at=created_at,

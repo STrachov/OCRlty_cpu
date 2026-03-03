@@ -138,7 +138,7 @@ python -m app.auth_cli create-key --key-id dbg-1 --role debugger --scopes '["ext
 
 ### 5.1 Core
 - `GET /v1/health` — healthcheck
-- `GET /v1/me` — кто я (проверка auth)
+- `GET /v1/me` — проверка auth
 - `GET /docs` — Swagger UI
 
 ### 5.2 Sync
@@ -158,8 +158,8 @@ python -m app.auth_cli create-key --key-id dbg-1 --role debugger --scopes '["ext
 - `POST /v1/jobs/{job_id}/cancel` (best-effort)
 
 ### 5.4 Runs
-- `GET /v1/runs?limit=...&cursor=...` ? ?????? batch run-?? (cursor = `<created_at>|<run_id>`)
-- `GET /v1/runs/{run_id}` ? ?????? batch artifact
+- `GET /v1/runs?limit=...&cursor=...` # (cursor = `<created_at>|<run_id>`)
+- `GET /v1/runs/{run_id}`  
 
 ### 5.5 Debug (только если `DEBUG_MODE=1` и scopes)
 - `GET /v1/debug/artifacts?limit=...`
@@ -170,14 +170,8 @@ python -m app.auth_cli create-key --key-id dbg-1 --role debugger --scopes '["ext
 ---
 
 ## 6) Важные детали про ответы
-
-- Hard ?????? (HTTP 4xx/5xx) ?????? ? ??????? `{"error": {"code","message","request_id","details"}}`.
-
 - Оркестратор **может вернуть HTTP 200**, даже если inference упал: смотри поле `error` в JSON.
 - `schema_valid=false` + `schema_errors` — модель (или mock) вернула JSON, не проходящий JSON‑schema.
-- `artifact_rel`:
-  - ? S3-?????? ? ???? ??? `S3_PREFIX` (???????? `extracts/YYYY-MM-DD/<id>.json`)
-  - ? local-?????? ? ???? ???????????? `ARTIFACTS_DIR` (???????? `extracts\YYYY-MM-DD\<id>.json`)
 
 ---
 
@@ -193,7 +187,7 @@ python -m app.auth_cli create-key --key-id dbg-1 --role debugger --scopes '["ext
 ```powershell
 # ====== CONFIG ======
 $BASE   = "http://127.0.0.1:8080"         # или https://<vps-host>
-$APIKEY = "oAJcMSdufcInKdy9PRb-sb-5H-vDquybRQSpym3fZg4"
+$APIKEY = "nBTYvXUe4IpAthXfSwFBJH_AkilivlXrVUPJOOa5r_o" #admin
 $AUTH   = "Authorization: Bearer $APIKEY"
 $CURL_W = "`nHTTP %{http_code}`n"
 
@@ -240,6 +234,7 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
   -F "concurrency=2" `
   -F "run_id=$RUN_ID" `
   -F "files=@$IMG;type=image/jpeg" `
+  -F "gt_path=/data/batch_smoke/cord_gt.json" `
   -F "files=@$IMG2;type=image/jpeg" `
   -F "files=@$IMG3;type=image/jpeg"
 
@@ -322,6 +317,7 @@ $job_create = curl.exe -sS -X POST "$BASE/v1/batch_extract_upload_async" `
   -F "run_id=async_up_$(Get-Date -Format yyyyMMddTHHmmss)" `
   -F "files=@$IMG;type=image/jpeg" `
   -F "files=@$IMG2;type=image/jpeg"
+  
 
 $job_id = ($job_create | ConvertFrom-Json).job_id
 "JOB_ID=$job_id"
@@ -431,6 +427,7 @@ done
 ```
 
 ---
+
 ## 8) Запуск RunPod
 - Выбрать GPU (например A5000 24GB).
 - Образ: `vllm/vllm-openai:latest`
@@ -442,6 +439,18 @@ done
 ```bash
 --model Qwen/Qwen3-VL-8B-Instruct --host 0.0.0.0 --port 8000 --trust-remote-code --max-model-len 4096 --limit-mm-per-prompt.video 0
 ```
+Для Qwen3.5
+```bash
+{"entrypoint":["bash","-lc"],"cmd":["vllm serve ${VLLM_MODEL:-cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit} --host 0.0.0.0 --port 8000 --trust-remote-code --quantization awq --tensor-parallel-size 1 --max-model-len ${VLLM_MAX_MODEL_LEN:-8192} --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.9}"]}
+```
+{"entrypoint":["bash","-lc"],"cmd":["pip install -U 'accelerate>=0.26.0' 'safetensors>=0.4.0' && pip install -U git+https://github.com/huggingface/transformers.git && vllm serve ${VLLM_MODEL:-cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit} --trust-remote-code --host 0.0.0.0 --port 8000 --quantization awq --tensor-parallel-size 1 --max-model-len ${VLLM_MAX_MODEL_LEN:-8192} --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.9}"]}
+
+
+vllm serve cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit \
+  --quantization awq \
+  --tensor-parallel-size 1 \
+  --gpu-memory-utilization 0.90 \
+  --max-model-len 8192 \
 - Порт: `8000`
 - Env (пример)
 VLLM_API_KEY=
@@ -459,10 +468,10 @@ HF_TOKEN=
 
 ## 10) Юнит-тестирование (Windows + PostgreSQL)
 
-Существует 2 группы тестов:
+Существует 2 группы юнит-тестов:
 
 - Быстрые юнит-тесты, не требующие базы данных.
-- Тесты хранилищ (`jobs_store`, `artifact_index`), которым требуется PostgreSQL.  
+- Юнит-тесты хранилищ (`jobs_store`, `artifact_index`), которым требуется PostgreSQL.  
   Эти тесты пропускаются, если не задана переменная `TEST_DATABASE_URL`.
 
 ### 10.1 Настройка окружения
