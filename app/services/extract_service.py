@@ -93,6 +93,7 @@ class ExtractResponse(BaseModel):
     model_id: str
     prompt_sha256: str
     schema_sha256: str
+    timings_ms: Dict[str, int] = Field(default_factory=dict)
 
     raw: Optional[Any] = None
     parsed: Optional[Dict[str, Any]] = None
@@ -148,6 +149,7 @@ class BatchItemResult(BaseModel):
     schema_errors: Optional[List[Dict[str, Any]]] = None
     error: Optional[Dict[str, Any]] = None
     error_history: Optional[List[Dict[str, Any]]] = None
+    timings_ms: Optional[Dict[str, int]] = None
 
 
 class BatchExtractResponse(BaseModel):
@@ -513,6 +515,11 @@ async def extract(
     request_id = make_request_id(req.request_id)
     _validate_request_id_for_fs(request_id)
 
+    # Timings (minimal, ms)
+    t_total0 = time.monotonic()
+    vllm_ms = 0
+    parse_validate_ms = 0
+
     if req.image_url:
         _debug_allowed(principal)
 
@@ -582,6 +589,8 @@ async def extract(
                 max_tokens=max_tokens,
             )
 
+            t_v0 = time.monotonic()
+
             if str(settings.INFERENCE_BACKEND).lower() == "mock":
             #if getattr(settings, "MOCK_VLLM", False):
                 resp = _mock_chat_completions(schema_json)
@@ -594,8 +603,11 @@ async def extract(
                     response_format=response_format,
                 )
 
+            vllm_ms += int(round((time.monotonic() - t_v0) * 1000))
             content = resp["choices"][0]["message"]["content"]
             raw = content if _raw_allowed(principal) else None
+
+            t_p0 = time.monotonic()
 
             try:
                 parsed = json.loads(content) if isinstance(content, str) else content
@@ -603,12 +615,20 @@ async def extract(
                 raise HTTPException(status_code=502, detail=f"Model returned non-JSON content: {e}")
 
             errors = sorted(validator.iter_errors(parsed), key=lambda e: str(getattr(e, "path", "")))
+            parse_validate_ms += int(round((time.monotonic() - t_p0) * 1000))
             if errors:
                 schema_errors = [{"path": list(e.path), "message": e.message} for e in errors[:50]]
                 raise HTTPException(status_code=502, detail={"code": "schema_validation_failed", "errors": schema_errors})
 
+            timings_ms: Dict[str, int] = {
+                "vllm": int(vllm_ms),
+                "parse_validate": int(parse_validate_ms),
+                "total": int(round((time.monotonic() - t_total0) * 1000)),
+            }
+
             artifact = {
                 **artifact_base,
+                "timings_ms": timings_ms,
                 "raw": raw,
                 "parsed": parsed,
                 "schema_valid": True,
@@ -638,6 +658,7 @@ async def extract(
                 schema_errors=None,
                 error=None,
                 error_history=error_history or None,
+                timings_ms=timings_ms,
                 meta=artifact["meta"],
             )
 
@@ -661,8 +682,15 @@ async def extract(
                     error_history.append({"attempt": attempt, "resize_error": str(resize_e)})
                     # fallthrough to persist error
             # Persist error artifact
+            timings_ms: Dict[str, int] = {
+                "vllm": int(vllm_ms),
+                "parse_validate": int(parse_validate_ms),
+                "total": int(round((time.monotonic() - t_total0) * 1000)),
+            }
+
             artifact = {
                 **artifact_base,
+                "timings_ms": timings_ms,
                 "raw": None,
                 "parsed": None,
                 "schema_valid": False,
@@ -686,12 +714,20 @@ async def extract(
                 schema_errors=None,
                 error=artifact["error"],
                 error_history=error_history or None,
+                timings_ms=timings_ms,
                 meta=artifact["meta"],
             )
         except Exception as e:
             error_history.append({"attempt": attempt, "error": str(e)})
+            timings_ms: Dict[str, int] = {
+                "vllm": int(vllm_ms),
+                "parse_validate": int(parse_validate_ms),
+                "total": int(round((time.monotonic() - t_total0) * 1000)),
+            }
+
             artifact = {
                 **artifact_base,
+                "timings_ms": timings_ms,
                 "raw": None,
                 "parsed": None,
                 "schema_valid": False,
@@ -715,6 +751,7 @@ async def extract(
                 schema_errors=None,
                 error=artifact["error"],
                 error_history=error_history or None,
+                timings_ms=timings_ms,
                 meta=artifact["meta"],
             )
 
@@ -844,6 +881,9 @@ async def _run_batch_extract_core(
     if limit is not None:
         inputs = inputs[: int(limit)]
 
+    # Timings (minimal, ms)
+    t_batch0 = time.monotonic()
+
     sem = asyncio.Semaphore(int(concurrency))
     items: List[BatchItemResult] = []
 
@@ -893,7 +933,11 @@ async def _run_batch_extract_core(
         async with sem:
             request_id = _make_batch_request_id(task_id, run_id, inp.file)
             token = _set_request_id(request_id)
+            t_item0 = time.monotonic()
             try:
+                preprocess_ms = 0
+                t_pre0 = time.monotonic()
+
                 if inp.bytes is None and inp.input_ref:
                     img_bytes = await asyncio.to_thread(_load_input_bytes_by_rel, inp.input_ref)
                     b64 = base64.b64encode(img_bytes).decode("ascii")
@@ -903,8 +947,13 @@ async def _run_batch_extract_core(
                     b64 = base64.b64encode(img_bytes).decode("ascii")
                     mime = inp.mime_type or _guess_mime_type(inp.file)
 
+                preprocess_ms = int(round((time.monotonic() - t_pre0) * 1000))
+
                 sub_req = ExtractRequest(task_id=task_id, request_id=request_id, image_base64=b64, mime_type=mime)
                 resp = await extract(sub_req, principal=principal, vllm_client=vllm_client)
+                item_timings: Dict[str, int] = dict(getattr(resp, "timings_ms", None) or {})
+                item_timings["preprocess"] = int(preprocess_ms)
+                item_timings["total"] = int(item_timings.get("total", 0)) + int(preprocess_ms)
                 items.append(
                     BatchItemResult(
                         file=inp.file,
@@ -917,6 +966,7 @@ async def _run_batch_extract_core(
                         schema_errors=resp.schema_errors,    
                         error=resp.error,
                         error_history=resp.error_history,
+                        timings_ms=item_timings,
                     )
                 )
                 if resp.error is None:
@@ -951,10 +1001,13 @@ async def _run_batch_extract_core(
     await asyncio.gather(*(one(i) for i in inputs))
 
     created_at = _now_utc_s()
+    batch_total_ms = int(round((time.monotonic() - t_batch0) * 1000))
+
     batch_payload: Dict[str, Any] = {
         "run_id": run_id,
         "created_at": created_at,
         "task_id": task_id,
+        "timings_ms": {"total": batch_total_ms},
         "images_dir": None,
         "glob": None,
         "concurrency": concurrency,
