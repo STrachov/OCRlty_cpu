@@ -107,6 +107,9 @@ RunPod proxy URL имеет вид:
 - `LOG_LEVEL` — `INFO` (или `DEBUG`)
 - `LOG_FORMAT` — `json` (по умолчанию)
 
+**CORS (браузерный UI)**
+- `CORS_ALLOW_ORIGINS` — allowlist origins (comma-separated), например `http://localhost:5173,https://ui.example.com`
+
 **Auth**
 - `AUTH_ENABLED=1`
 - `AUTH_DB_PATH=...` (SQLite)
@@ -179,6 +182,10 @@ Orchestrator выполняет:
 - в UI/ответах предпочтительно оперировать `rel_ref`/`artifact_rel`, а на сервере резолвить в `full_ref`.
 
 - Артефакты сохраняются **и при ошибках** (inference/parse/validate), чтобы всегда было “куда смотреть”.
+
+- `timings_ms` сохраняются:
+  - в extract‑артефакте: минимальный формат `{total, vllm, parse_validate}` (мс);
+  - в batch‑артефакте: на уровне `items[]` (добавляется `preprocess`, а `total` = extract_total + preprocess), плюс на верхнем уровне batch есть `timings_ms: {total}` для wall‑time всего прогона.
 - Сейчас `input` в extract‑артефакте не содержит base64 вообще: при наличии base64 в запросе в артефакт пишем только image_base64_len, а для воспроизводимости используем image_ref/input_ref (в batch всегда есть input_ref; в sync image_ref появляется только если input был сохранён как ref).
 - По умолчанию включена защита от перезаписи (если `S3_ALLOW_OVERWRITE=0`).
 
@@ -274,11 +281,13 @@ Orchestrator выполняет:
 
 ### 8.9 Runs API (для UI, batch artifact = продуктовый объект)
 
-- `GET /v1/runs?limit&cursor` ? ?????? batch-???????? (run registry = `artifact_index`, cursor pagination).
-  - `cursor` = `<created_at>|<run_id>` (?? `next_cursor` ?????????? ????????)
-  - keyset pagination: `created_at DESC, run_id DESC`
-- `GET /v1/runs/{run_id}` — вернуть **полный batch‑артефакт** (summary + `items[]`), где каждый item содержит минимум для UI: `parsed`, `schema_valid`, `schema_errors`, `error`, `error_history`, `file`, `request_id`, `input_ref`, `artifact_rel`.
-- `(TODO) GET /v1/artifacts?ref=<artifact_rel>` — drill‑down: вернуть полный JSON extract‑артефакта для конкретного item (auth‑gated, без debug).
+- `GET /v1/runs?limit&cursor` — список batch‑прогонов текущего пользователя (admin видит всё).
+  - keyset pagination: сортировка `created_at DESC, run_id DESC`
+  - `cursor` = `<created_at>|<run_id>` (возвращается `next_cursor`)
+- `GET /v1/runs/{run_id}` — вернуть **полный batch‑артефакт** (summary + `items[]`).
+  - каждый item содержит минимум для UI: `parsed`, `schema_valid`, `schema_errors`, `error`, `error_history`, `file`, `request_id`, `input_ref`, `artifact_rel`.
+- `GET /v1/runs/item/{request_id}` — drill‑down: вернуть полный JSON extract‑артефакта для конкретного item (auth‑gated).
+  - `raw` выдаётся только при scope `debug:read_raw`, иначе `raw=null`.
 
 > Примечание про пагинацию: пока батчи небольшие — UI может получать batch целиком. Когда батчи станут большими, понадобится серверная пагинация/чанкинг (см. TODO P2).
 
@@ -572,47 +581,23 @@ echo "job_id=$job_id"
 
 ## 12) TODO 
 
-### P0 — UI-ready API (минимум, чтобы начать интерфейс)
-* Под прогоном (run) понимается батч прогон.
-1) (DONE) **Runs list поверх `artifact_index` (без нового run registry)**. 
-- добавить `ArtifactIndex.list(...)`:
-  - фильтры: `kind="batch"`, `owner_key_id`, `limit`, `cursor`
-  - сортировка по дате создания (как по возрастанию так и по убыванию)
-- эндпоинт:
-  - `GET /v1/runs?limit&cursor` ? ?????? ???????? + `next_cursor` (items: `run_id`, `created_at`, `task_id`, `item_count`, `ok_count`, `error_count`, `artifact_rel`)
-
-2) (DONE) **Run details = полный batch artifact**
-- эндпоинт:
-  - `GET /v1/runs/{run_id}` → вернуть полный JSON батч артефакта (на данный момент он уже содержит нужные данные для UI: `parsed`, `schema_valid`, `schema_errors`, `error`, `error_history`, `file`, `request_id`, `input_ref`, `artifact_rel`)
-  
-3) **Drill-down по одному item (дешёвый вариант, 1 чтение из storage)**
-- эндпоинт:
-  - `GET /v1/extracts/{request_id}` → вернуть полный JSON extract-артефакта (auth-gated, без debug)
-
-- серверная логика/проверки:
-  1) найти артефакт по индексу: `(kind="extract", artifact_id=request_id)` → получить `full_ref`
-  2) проверить владельца: `owner_key_id` из `artifact_index` == текущий `principal.key_id`
-     - (админ-роль может читать всех, если так задумано)
-  3) прочитать JSON из storage по `full_ref` и вернуть его
-  4) выдача `raw` — только при соответствующем scope (`debug:read_raw`/аналог), иначе `raw=null` (если `raw` присутствует в файле)
-
-- примечания:
-  - этот вариант **не проверяет**, что `request_id` относится к конкретному `run_id`; гарантируется только “пользователь видит свои артефакты”.
-  - строгую проверку “item ∈ run” можно добавить позже отдельным эндпоинтом или через таблицу `run_items` (P2/P3).
-
-
-4) **CORS для браузерного UI + минимальная модель auth для UI**
-- allowlist origins (dev/prod)
-- на старте можно API key вручную (позже — токены/сессии)
+### P0 — Минимальный UI (v0)
+1) **Минимально достаточный UI (v0)**
+- Цель: просматривать результаты прогонов без ручного чтения артефактов.
+- Аутентификация: ввод API key вручную (временное решение; хранение в localStorage).
+- Экраны/функции:
+  - **Runs list**: `GET /v1/runs?limit&cursor` (пагинация), колонки: `created_at`, `run_id`, `task_id`, `item_count`, `ok_count`, `error_count`.
+  - **Run details**: `GET /v1/runs/{run_id}` — таблица `items[]` с колонками: `file`, `schema_valid`, `error`, `request_id`.
+  - **Item details (drill‑down)**: `GET /v1/runs/item/{request_id}` — показать полный extract‑артефакт.
+  - (опционально) client-side фильтры: `schema_valid=false` / `error!=null`, поиск по `file`.
+- UX‑минимум:
+  - копирование `request_id`/`run_id`,
+  - компактный просмотр `schema_errors` и `error_history`,
+  - отображение `timings_ms` по item.
 
 ---
 
-### P1 **RunPod pod manager** в Orchestrator:
-- start/stop/create pod
-- обновление `VLLM_BASE_URL` при миграции/пересоздании
-- retries на cold start
-
-### P2 — Контроль стоимости/безопасности (когда начнет использоваться чаще)
+### P1 — Контроль стоимости/безопасности (когда начнет использоваться чаще)
 5) **Лимиты payload**
 - max image bytes (sync base64)
 - max files per upload
@@ -637,6 +622,12 @@ echo "job_id=$job_id"
   - добавить стадию `canceled` при cooperative cancel (когда будет сделано)
   - убедиться, что runner/executor всегда прокидывает `progress_cb` для `batch_extract_upload_async` и `batch_extract_rerun_async`
 
+---
+
+### P2 **RunPod pod manager** в Orchestrator:
+- start/stop/create pod
+- обновление `VLLM_BASE_URL` при миграции/пересоздании
+- retries на cold start
 
 ---
 
