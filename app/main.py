@@ -129,11 +129,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="OCRlty", version="0.1", lifespan=lifespan)
 register_error_handlers(app)
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    #"https://your-ui-domain.com",
-]
+ALLOWED_ORIGINS = settings.cors_allow_origins
+if not ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
 app.add_middleware(
     CORSMiddleware,

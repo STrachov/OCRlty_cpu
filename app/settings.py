@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     MAX_TOKENS_CAP: int = 256
 
     # --- App ---
+    # --- CORS (browser UI) ---
+    # Comma-separated list of allowed origins, e.g.
+    #   CORS_ALLOW_ORIGINS="http://localhost:5173,https://ui.example.com"
+    CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     ARTIFACTS_DIR: str = "/data/artifacts"
 
     VLLM_MODEL: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -102,6 +107,13 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_s3_prefix(cls, v):
         return str(v or "ocrlty").strip().strip("/")
+
+    @property
+    def cors_allow_origins(self) -> list[str]:
+        s = str(self.CORS_ALLOW_ORIGINS or "").strip()
+        if not s:
+            return []
+        return [p.strip() for p in s.split(",") if p.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

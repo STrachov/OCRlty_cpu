@@ -8,7 +8,14 @@ from pydantic import BaseModel, Field
 from app.auth import require_scopes
 from app.auth_store import ApiPrincipal
 from app.schemas.api_error import common_error_responses
-from app.services.artifacts import find_batch_artifact_path, list_batch_artifacts, read_artifact_json
+from app.handlers import _validate_request_id_for_fs
+from app.services.artifacts import (
+    find_artifact_path,
+    find_batch_artifact_path,
+    list_batch_artifacts,
+    read_artifact_json,
+)
+from app.settings import settings
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 _ERR = common_error_responses(400, 401, 403, 404, 422, 500)
@@ -56,8 +63,7 @@ def _ensure_owner_or_admin(principal: ApiPrincipal, owner_key_id: Optional[str])
 @router.get(
     "",
     response_model=RunsListResponse,
-    responses=_ERR,
-    dependencies=[Depends(require_scopes(["extract:run"]))],
+    responses=_ERR
 )
 async def list_runs(
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
@@ -109,8 +115,7 @@ async def list_runs(
 @router.get(
     "/{run_id}",
     response_model=Dict[str, Any],
-    responses=_ERR,
-    dependencies=[Depends(require_scopes(["extract:run"]))],
+    responses=_ERR
 )
 async def get_run(
     run_id: str,
@@ -126,4 +131,46 @@ async def get_run(
     auth = obj.get("auth") if isinstance(obj.get("auth"), dict) else {}
     owner_key_id = auth.get("key_id") if isinstance(auth, dict) else None
     _ensure_owner_or_admin(principal, str(owner_key_id) if owner_key_id else None)
+    return obj
+
+@router.get(
+    "/item/{request_id}",
+    response_model=Dict[str, Any],
+    responses=_ERR,
+)
+def get_extract_artifact(
+    request_id: str,
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+) -> Dict[str, Any]:
+    """
+    Drill-down по одному item (extract artifact).
+
+    - 1 чтение JSON из storage
+    - владелец: artifact.auth.key_id == principal.key_id (если AUTH_ENABLED)
+    - raw: только при scope debug:read_raw, иначе raw=null
+    """
+    _validate_request_id_for_fs(request_id)
+
+    ref = find_artifact_path(request_id)
+    if not ref:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    obj = read_artifact_json(ref)
+
+    # Owner check (hide existence)
+    if settings.AUTH_ENABLED:
+        owner_key_id = None
+        auth = obj.get("auth")
+        if isinstance(auth, dict):
+            owner_key_id = auth.get("key_id")
+
+        is_admin = (principal.role or "").strip().lower() == "admin"
+        if (not is_admin) and (owner_key_id != principal.key_id):
+            raise HTTPException(status_code=404, detail="Not found")
+
+    # Raw gating (no debug by default)
+    if "debug:read_raw" not in getattr(principal, "scopes", set()):
+        if "raw" in obj:
+            obj["raw"] = None
+
     return obj
