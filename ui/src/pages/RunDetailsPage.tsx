@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { getRun } from "../api/runs";
-import { CopyButton } from "../components/CopyButton";
 import { ErrorPanel } from "../components/ErrorPanel";
+import { useLayoutContext } from "../layout/LayoutContext";
 
 type ArtifactItem = Record<string, unknown>;
 
@@ -24,9 +24,12 @@ function compactError(value: unknown): string {
 
 export function RunDetailsPage() {
   const { run_id } = useParams<{ run_id: string }>();
+  const navigate = useNavigate();
+  const { setRunInspectorState } = useLayoutContext();
   const [onlySchemaInvalid, setOnlySchemaInvalid] = useState(false);
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [searchFile, setSearchFile] = useState("");
+  const [focusedIndex, setFocusedIndex] = useState(0);
 
   const runQuery = useQuery({
     queryKey: ["run", run_id],
@@ -55,6 +58,25 @@ export function RunDetailsPage() {
       return true;
     });
   }, [items, onlyErrors, onlySchemaInvalid, searchFile]);
+
+  useEffect(() => {
+    if (focusedIndex >= filteredItems.length) {
+      setFocusedIndex(Math.max(filteredItems.length - 1, 0));
+    }
+  }, [filteredItems.length, focusedIndex]);
+
+  useEffect(() => {
+    setRunInspectorState({
+      artifact: artifact as Record<string, unknown>,
+      focusedItem: filteredItems[focusedIndex] ?? null,
+    });
+  }, [artifact, filteredItems, focusedIndex, setRunInspectorState]);
+
+  useEffect(() => {
+    return () => {
+      setRunInspectorState({ artifact: null, focusedItem: null });
+    };
+  }, [setRunInspectorState]);
 
   const topRunId = (artifact.run_id as string | undefined) ?? run_id ?? "-";
   const topTaskId = (artifact.task_id as string | undefined) ?? "-";
@@ -110,44 +132,58 @@ export function RunDetailsPage() {
             </label>
           </div>
 
-          <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
+          <div
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setFocusedIndex((v) => Math.min(v + 1, Math.max(0, filteredItems.length - 1)));
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setFocusedIndex((v) => Math.max(v - 1, 0));
+              } else if (e.key === "Enter") {
+                const current = filteredItems[focusedIndex];
+                const requestId = typeof current?.request_id === "string" ? current.request_id : "";
+                if (requestId) {
+                  navigate(`/items/${encodeURIComponent(requestId)}`);
+                }
+              }
+            }}
+            className="overflow-x-auto rounded-md border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-300"
+          >
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-left">
                 <tr>
                   <th className="px-3 py-2">file</th>
                   <th className="px-3 py-2">schema_valid</th>
                   <th className="px-3 py-2">error</th>
-                  <th className="px-3 py-2">parsed</th>
-                  
+                  <th className="px-3 py-2">request_id</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredItems.map((item, idx) => {
                   const requestId = typeof item.request_id === "string" ? item.request_id : "";
+                  const isFocused = idx === focusedIndex;
                   return (
-                    <tr key={`${requestId || "req"}-${idx}`} className="border-t border-slate-100">
-                      <td className="px-3 py-2"> 
+                    <tr
+                      key={`${requestId || "req"}-${idx}`}
+                      className={`border-t border-slate-100 ${isFocused ? "bg-slate-100" : ""}`}
+                      onClick={() => setFocusedIndex(idx)}
+                    >
+                      <td className="px-3 py-2">
                         {requestId ? (
                           <Link className="text-blue-700 hover:underline" to={`/items/${encodeURIComponent(requestId)}`}>
                             {typeof item.file === "string" ? item.file : "-"}
                           </Link>
                         ) : (
-                          "-"
+                          typeof item.file === "string" ? item.file : "-"
                         )}
-                        </td>
+                      </td>
                       <td className="px-3 py-2">{String((item.schema_valid as boolean | null | undefined) ?? "-")}</td>
                       <td className="max-w-[360px] truncate px-3 py-2" title={compactError(item.error)}>
                         {compactError(item.error)}
                       </td>
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs">
-                            {item.parsed ? JSON.stringify(item.parsed) : "-"}
-                          </span>
-                          
-                        </div>
-                      </td>
-                      
+                      <td className="px-3 py-2"><span className="font-mono text-xs">{requestId || "-"}</span></td>
                     </tr>
                   );
                 })}
