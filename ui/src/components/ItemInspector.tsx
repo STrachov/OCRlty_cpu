@@ -8,9 +8,10 @@ import { fetchJson } from "../api/client";
 
 type ItemInspectorProps = {
   item: Record<string, unknown> | null;
+  runId?: string;
 };
 
-export function ItemInspector({ item }: ItemInspectorProps) {
+export function ItemInspector({ item, runId }: ItemInspectorProps) {
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
 
@@ -117,6 +118,7 @@ export function ItemInspector({ item }: ItemInspectorProps) {
       {requestId ? (
         <Link
           to={`/items/${encodeURIComponent(requestId)}`}
+          state={runId ? { runId } : undefined}
           className="inline-block rounded bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700"
         >
           Open item page

@@ -24,7 +24,7 @@ export function TopBar() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold">OCRlty UI</h1>
-          <Breadcrumbs />
+          
           <p className="text-sm text-slate-600">API: {apiBaseUrl || "n/a"}</p>
           <p className="text-sm text-slate-600">User: {userLabel}</p>
         </div>
@@ -39,6 +39,7 @@ export function TopBar() {
           Logout
         </button>
       </div>
+      <Breadcrumbs />
     </header>
   );
 }

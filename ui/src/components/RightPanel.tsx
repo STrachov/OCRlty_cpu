@@ -69,7 +69,7 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
         </div>
         <div className="rounded border border-slate-200 p-3">
           <h3 className="mb-2 text-sm font-semibold">Item Inspector</h3>
-          <ItemInspector item={focusedItem} />
+          <ItemInspector item={focusedItem} runId={run_id} />
         </div>
       </aside>
     );

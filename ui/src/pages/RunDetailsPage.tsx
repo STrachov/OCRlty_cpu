@@ -145,7 +145,7 @@ export function RunDetailsPage() {
                 const current = filteredItems[focusedIndex];
                 const requestId = typeof current?.request_id === "string" ? current.request_id : "";
                 if (requestId) {
-                  navigate(`/items/${encodeURIComponent(requestId)}`);
+                  navigate(`/items/${encodeURIComponent(requestId)}`, { state: { runId: run_id } });
                 }
               }
             }}
@@ -172,7 +172,11 @@ export function RunDetailsPage() {
                     >
                       <td className="px-3 py-2">
                         {requestId ? (
-                          <Link className="text-blue-700 hover:underline" to={`/items/${encodeURIComponent(requestId)}`}>
+                          <Link
+                            className="text-blue-700 hover:underline"
+                            to={`/items/${encodeURIComponent(requestId)}`}
+                            state={{ runId: run_id }}
+                          >
                             {typeof item.file === "string" ? item.file : "-"}
                           </Link>
                         ) : (
