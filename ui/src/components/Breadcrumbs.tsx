@@ -4,10 +4,29 @@ import { Link, useLocation, useParams } from "react-router-dom";
 
 function CrumbLink({ to, label }: { to: string; label: string }) {
   return (
-    <Link className="text-blue-700 hover:underline" to={to}>
+    <Link
+      className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+      to={to}
+      title={label}
+    >
       {label}
     </Link>
   );
+}
+
+function CrumbCurrent({ label, mono = false }: { label: string; mono?: boolean }) {
+  return (
+    <span
+      className={`max-w-[340px] truncate rounded-md border border-slate-300 bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-900 ${mono ? "font-mono" : ""}`}
+      title={label}
+    >
+      {label}
+    </span>
+  );
+}
+
+function Sep() {
+  return <span className="text-slate-400">/</span>;
 }
 
 export function Breadcrumbs() {
@@ -28,31 +47,35 @@ export function Breadcrumbs() {
   }, [location.state, queryClient, request_id]);
 
   if (location.pathname === "/runs") {
-    return <span className="text-sm text-slate-700">Runs</span>;
+    return (
+      <div className="flex items-center gap-2">
+        <CrumbCurrent label="Runs" />
+      </div>
+    );
   }
 
   if (location.pathname.startsWith("/runs/") && run_id) {
     return (
-      <div className="flex items-center gap-2 text-sm text-slate-700">
+      <div className="flex items-center gap-2">
         <CrumbLink to="/runs" label="Runs" />
-        <span>/</span>
-        <span className="font-mono text-xs">{run_id}</span>
+        <Sep />
+        <CrumbCurrent label={run_id} mono />
       </div>
     );
   }
 
   if (location.pathname.startsWith("/items/") && request_id) {
     return (
-      <div className="flex items-center gap-2 text-sm text-slate-700">
+      <div className="flex items-center gap-2">
         <CrumbLink to="/runs" label="Runs" />
-        <span>/</span>
+        <Sep />
         {itemRunId ? (
-          <CrumbLink to={`/runs/${encodeURIComponent(itemRunId)}`} label="Run" />
+          <CrumbLink to={`/runs/${encodeURIComponent(itemRunId)}`} label={itemRunId} />
         ) : (
-          <span>Item</span>
+          <CrumbCurrent label="Item" />
         )}
-        <span>/</span>
-        <span className="font-mono text-xs">{request_id}</span>
+        <Sep />
+        <CrumbCurrent label={request_id} mono />
       </div>
     );
   }
