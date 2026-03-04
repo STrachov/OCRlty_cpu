@@ -26,6 +26,7 @@ class InputPresignResponse(BaseModel):
 )
 def presign_input(
     input_ref: str = Query(...),
+    expires_in: int | None = Query(default=None),
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> InputPresignResponse:
     rel = str(input_ref or "").replace("\\", "/").lstrip("/")
@@ -39,6 +40,10 @@ def presign_input(
             raise HTTPException(status_code=404, detail="Not found")
 
     key = s3_key(rel)
-    expires_in = int(settings.S3_PRESIGN_TTL_S)
-    url = s3_presign_get_url(key=key, expires_s=expires_in)
-    return InputPresignResponse(input_ref=rel, url=url, expires_in=expires_in)
+    try:
+        effective_expires_in = int(settings.S3_PRESIGN_TTL_S if expires_in is None else expires_in)
+    except Exception:
+        effective_expires_in = 3600
+    effective_expires_in = max(1, min(effective_expires_in, 86400))
+    url = s3_presign_get_url(key=key, expires_s=effective_expires_in)
+    return InputPresignResponse(input_ref=rel, url=url, expires_in=effective_expires_in)
