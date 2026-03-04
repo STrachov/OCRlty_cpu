@@ -269,6 +269,24 @@ def s3_get_bytes(key: str) -> bytes:
         raise HTTPException(status_code=502, detail=f"S3 get_object failed: {code}")
     return obj["Body"].read()
 
+def s3_presign_get_url(*, key: str, expires_s: int | None = None) -> str:
+    if not s3_enabled():
+        raise HTTPException(status_code=501, detail="S3 is not enabled.")
+
+    ttl = settings.S3_PRESIGN_TTL_S if expires_s is None else expires_s
+    try:
+        ttl_i = int(ttl)
+    except Exception:
+        ttl_i = int(settings.S3_PRESIGN_TTL_S or 3600)
+    ttl_i = max(1, min(ttl_i, 86400))
+
+    return s3_client().generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": _S3_BUCKET, "Key": key},
+        ExpiresIn=ttl_i,
+        HttpMethod="GET",
+    )
+
 def s3_exists(key: str) -> bool:
     return _s3_exists(key)
 

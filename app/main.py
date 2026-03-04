@@ -12,6 +12,7 @@ from app.routers.core import router as core_router
 from app.routers.extract import router as extract_router
 from app.routers.debug import router as debug_router
 from app.routers.runs import router as runs_router
+from app.routers.inputs import router as inputs_router
 from app.error_handlers import register_error_handlers
 from app.handlers import make_request_id, REQUEST_ID_CTX, setup_logging, load_tasks
 from app.services.artifacts import artifact_index_init
@@ -169,3 +170,4 @@ app.include_router(extract_router)
 app.include_router(debug_router)
 app.include_router(jobs_router)
 app.include_router(runs_router)
+app.include_router(inputs_router)
