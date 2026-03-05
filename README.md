@@ -235,6 +235,7 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
   -F "concurrency=2" `
   -F "run_id=$RUN_ID" `
   -F "gt_path=$gt_path" `
+  -F "gt_image_key=file" `
   -F "files=@$IMG;type=image/jpeg" `
   -F "files=@$IMG2;type=image/jpeg" `
   -F "files=@$IMG3;type=image/jpeg"
