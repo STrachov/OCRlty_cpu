@@ -57,6 +57,26 @@ export function ItemInspector({ item, runId }: ItemInspectorProps) {
 
   return (
     <div className="space-y-3 text-sm">
+      
+      <div>
+        <p className="mb-2 text-xs text-slate-500">Receipt image preview</p>
+        {imgSrc && !imgFailed ? (
+          <img
+            src={imgSrc}
+            alt="Receipt preview"
+            className="max-h-100 w-full rounded border border-slate-200 object-contain"
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          <p className="rounded border border-dashed border-slate-300 p-3 text-xs text-slate-500">Receipt image not available</p>
+        )}
+      </div>
+
+      <Collapsible title="parsed" defaultOpen>
+        <JsonView data={item.parsed ?? null} />
+      </Collapsible>
+
+
       <div>
         <p className="text-xs text-slate-500">file</p>
         <p className="break-all">{typeof item.file === "string" ? item.file : "-"}</p>
@@ -97,25 +117,9 @@ export function ItemInspector({ item, runId }: ItemInspectorProps) {
         <JsonView data={item.error_history ?? null} />
       </Collapsible>
 
-      <Collapsible title="parsed">
-        <JsonView data={item.parsed ?? null} />
-      </Collapsible>
+      
 
-      <div>
-        <p className="mb-2 text-xs text-slate-500">Receipt image preview</p>
-        {imgSrc && !imgFailed ? (
-          <img
-            src={imgSrc}
-            alt="Receipt preview"
-            className="max-h-56 w-full rounded border border-slate-200 object-contain"
-            onError={() => setImgFailed(true)}
-          />
-        ) : (
-          <p className="rounded border border-dashed border-slate-300 p-3 text-xs text-slate-500">Receipt image not available</p>
-        )}
-      </div>
-
-      {requestId ? (
+      {/* {requestId ? (
         <Link
           to={`/items/${encodeURIComponent(requestId)}`}
           state={runId ? { runId } : undefined}
@@ -123,7 +127,7 @@ export function ItemInspector({ item, runId }: ItemInspectorProps) {
         >
           Open item page
         </Link>
-      ) : null}
+      ) : null} */}
     </div>
   );
 }

@@ -5,8 +5,18 @@ import { getRun } from "../api/runs";
 import { ErrorPanel } from "../components/ErrorPanel";
 import { useLayoutContext } from "../layout/LayoutContext";
 
-type ArtifactItem = Record<string, unknown>;
-
+// type ArtifactItem = Record<string, unknown>;
+type ArtifactItem = {
+  request_id?: string;
+  file?: string;
+  schema_valid?: boolean | null;
+  error?: unknown;
+  timings_ms?: {
+    total?: number; // или number | null, если бывает null
+    [k: string]: unknown;
+  } | null;
+  [k: string]: unknown; // чтобы не потерять другие поля
+};
 function compactError(value: unknown): string {
   if (value == null) {
     return "-";
@@ -157,7 +167,7 @@ export function RunDetailsPage() {
                   <th className="px-3 py-2">file</th>
                   <th className="px-3 py-2">schema_valid</th>
                   <th className="px-3 py-2">error</th>
-                  <th className="px-3 py-2">request_id</th>
+                  <th className="px-3 py-2">total time</th>
                 </tr>
               </thead>
               <tbody>
@@ -187,7 +197,7 @@ export function RunDetailsPage() {
                       <td className="max-w-[360px] truncate px-3 py-2" title={compactError(item.error)}>
                         {compactError(item.error)}
                       </td>
-                      <td className="px-3 py-2"><span className="font-mono text-xs">{requestId || "-"}</span></td>
+                      <td>{item.timings_ms?.total ?? "-"}</td>
                     </tr>
                   );
                 })}

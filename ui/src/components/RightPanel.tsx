@@ -50,27 +50,28 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
   if (location.pathname.startsWith("/runs/") && run_id) {
     return (
       <aside className="w-[360px] shrink-0 space-y-4 overflow-auto border-l border-slate-200 bg-white p-4">
-        <div className="rounded border border-slate-200 p-3 text-sm">
+        {/* <div className="rounded border border-slate-200 p-3 text-sm">
           <p><span className="font-medium">run_id:</span> {String(runData?.run_id ?? run_id)}</p>
           <p><span className="font-medium">task_id:</span> {String(runData?.task_id ?? "-")}</p>
           <p><span className="font-medium">created_at:</span> {String(runData?.created_at ?? "-")}</p>
           <p><span className="font-medium">ok_count:</span> {String(runData?.ok_count ?? "-")}</p>
           <p><span className="font-medium">error_count:</span> {String(runData?.error_count ?? "-")}</p>
-          <button
+          
+        </div>
+        <div className="rounded border border-slate-200 p-3 text-xs text-slate-600">
+          ↑/↓ navigate, Enter open
+        </div> */}
+        <div className="rounded border border-slate-200 p-3">
+          <h3 className="mb-2 text-sm font-semibold">Item Inspector</h3>
+          <ItemInspector item={focusedItem} runId={run_id} />
+        </div>
+        <button
             type="button"
             onClick={() => downloadJson(`run-${run_id}.json`, runData ?? {})}
             className="mt-3 rounded border border-slate-300 px-3 py-2 text-xs hover:bg-slate-100"
           >
             Download Run JSON
           </button>
-        </div>
-        <div className="rounded border border-slate-200 p-3 text-xs text-slate-600">
-          ↑/↓ navigate, Enter open
-        </div>
-        <div className="rounded border border-slate-200 p-3">
-          <h3 className="mb-2 text-sm font-semibold">Item Inspector</h3>
-          <ItemInspector item={focusedItem} runId={run_id} />
-        </div>
       </aside>
     );
   }

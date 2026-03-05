@@ -226,6 +226,7 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/extract" `
 # ====== 2) SYNC: /v1/batch_extract_upload (multipart) ======
 $RUN_ID = $PREFIX + (Get-Date -Format "yyyyMMddTHHmmss")
 
+$gt_path = (Resolve-Path ".\data\batch_smoke\cord_gt.json").Path
 
 curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
   -H $AUTH `
@@ -233,8 +234,8 @@ curl.exe -sS -w $CURL_W -X POST "$BASE/v1/batch_extract_upload" `
   -F "persist_inputs=true" `
   -F "concurrency=2" `
   -F "run_id=$RUN_ID" `
+  -F "gt_path=$gt_path" `
   -F "files=@$IMG;type=image/jpeg" `
-  -F "gt_path=/data/batch_smoke/cord_gt.json" `
   -F "files=@$IMG2;type=image/jpeg" `
   -F "files=@$IMG3;type=image/jpeg"
 
