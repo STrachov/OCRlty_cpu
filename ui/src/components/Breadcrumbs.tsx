@@ -54,6 +54,14 @@ export function Breadcrumbs() {
     );
   }
 
+  if (location.pathname === "/settings") {
+    return (
+      <div className="flex items-center gap-2">
+        <CrumbCurrent label="Settings" />
+      </div>
+    );
+  }
+
   if (location.pathname.startsWith("/runs/") && run_id) {
     return (
       <div className="flex items-center gap-2">
