@@ -131,6 +131,23 @@ def _s3_put_json(key: str, payload: Dict[str, Any]) -> None:
         raise
 
 
+def _s3_put_json_overwrite(key: str, payload: Dict[str, Any]) -> None:
+    body = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+    def _do():
+        kwargs: Dict[str, Any] = {
+            "Bucket": _S3_BUCKET,
+            "Key": key,
+            "Body": body,
+            "ContentType": "application/json; charset=utf-8",
+            "CacheControl": "no-store",
+        }
+        # NOTE: overwrite is always allowed here (no IfNoneMatch)
+        return s3_client().put_object(**kwargs)
+
+    s3_call_with_retries(_do, op="put_object")
+
+
 def _s3_get_text(key: str) -> str:
     def _do():
         return s3_client().get_object(Bucket=_S3_BUCKET, Key=key)
@@ -227,6 +244,11 @@ def s3_key(rel: str) -> str:
 def s3_put_json(key: str, payload: Dict[str, Any]) -> None:
     return _s3_put_json(key, payload)
 
+
+def s3_put_json_overwrite(key: str, payload: Dict[str, Any]) -> None:
+    return _s3_put_json_overwrite(key, payload)
+
+    
 def s3_put_bytes(*, key: str, data: bytes, content_type: str = "application/octet-stream") -> bool:
     body = data or b""
 

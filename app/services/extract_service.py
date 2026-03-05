@@ -35,7 +35,7 @@ from app.services.artifacts import (
     find_batch_artifact_path,
     to_artifact_rel,
 )
-from app.services.s3_service import s3_enabled, s3_get_bytes, s3_key, s3_put_bytes, s3_put_json
+from app.services.s3_service import s3_enabled, s3_get_bytes, s3_key, s3_put_bytes, s3_put_json, s3_put_json_overwrite
 
 from app.handlers import (
     _ctx_request_id,
@@ -855,7 +855,7 @@ async def _run_eval_batch_vs_gt(
             if isinstance(batch_path, Path):
                 batch_path.write_text(json.dumps(batch_obj, ensure_ascii=False, indent=2), encoding="utf-8")
             else:
-                s3_put_json(batch_path, batch_obj)  # batch_path is S3 key ref
+                s3_put_json_overwrite(batch_path, batch_obj)  # batch_path is S3 key ref
     except Exception as e:
         _log_event(logging.WARNING, "batch_eval_attach_failed", run_id=run_id, error=str(e))
 
