@@ -318,10 +318,22 @@ class EvalBatchVsGTResponse(BaseModel):
     eval_id: str
     created_at: str
     run_id: str
+
+    # Useful context (small)
+    batch_date: Optional[str] = None
+    task_id: Optional[str] = None
     gt_path: str
+
+    # Pointers
     batch_artifact_rel: str
     eval_artifact_rel: str
 
+    # ---- inline (thin) ----
+    # summary is small and always handy for UI
+    summary: Optional[Dict[str, Any]] = None
+
+    # per-item metrics keyed by request_id (thin; no mismatches arrays)
+    by_request_id: Optional[Dict[str, Dict[str, Any]]] = None
 
 class _Missing:
     pass
@@ -825,13 +837,31 @@ async def eval_batch_vs_gt(
     }
 
     owner = (batch_obj.get("auth") or {}).get("key_id")
-    #eval_artifact_ref = await save_eval_artifact(payload, owner)
     eval_artifact_ref = await asyncio.to_thread(save_eval_artifact, payload, owner)
+
+    # ---- thin inline for batch ----
+    by_request_id: Dict[str, Dict[str, Any]] = {}
+    for s in sample_summaries:
+        rid = str(s.get("request_id") or "")
+        if not rid:
+            continue
+        by_request_id[rid] = {
+            "gt_ok": bool(s.get("gt_ok")),
+            "pred_ok": bool(s.get("pred_ok")),
+            "mismatches_count": int(s.get("mismatches_count") or 0),
+        }
+
     return EvalBatchVsGTResponse(
         eval_id=eval_id,
         created_at=created_at,
         run_id=req.run_id,
+        batch_date=batch_date,
+        task_id=task_id,
         gt_path=str(gt_p),
         batch_artifact_rel=to_artifact_rel(batch_path),
         eval_artifact_rel=to_artifact_rel(eval_artifact_ref),
+
+        # inline
+        summary=payload.get("summary"),
+        by_request_id=by_request_id,
     )
