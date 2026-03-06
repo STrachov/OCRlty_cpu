@@ -173,7 +173,19 @@ def _log_event(level: int, event: str, **fields: Any) -> None:
 # Tasks registry
 # ---------------------------
 TASK_SPECS = [
-    {"task_id": "receipt_fields_v1", "prompt_file": "receipt_fields_v1.txt", "schema_file": "receipt_fields_v1.schema.json"},
+    {
+        "task_id": "receipt_fields_v1",
+        "prompt_file": "receipt_fields_v1.txt",
+        "schema_file": "receipt_fields_v1.schema.json",
+        "description": "Extracts receipt-level monetary totals and payment fields as raw printed strings.",
+    },
+    {
+        "task_id": "items_light_v1",
+        "prompt_file": "items_light_v1.txt",
+        "schema_file": "items_light_v1.schema.json",
+        "description": "Extracts purchased line items with raw quantity, unit price, and line total values.",
+    },
+
 ]
 _TASKS: Dict[str, Dict[str, Any]] = {}
 _TASK_LOAD_ERRORS: List[str] = []
@@ -195,6 +207,7 @@ def load_tasks() -> None:
                 raise ValueError("schema JSON must be an object")
             _TASKS[task_id] = {
                 "task_id": task_id,
+                "description": str(spec.get("description") or ""),
                 "prompt_path": str(prompt_path),
                 "schema_path": str(schema_path),
                 "prompt_value": prompt_value,
@@ -214,6 +227,18 @@ def _get_task(task_id: str) -> Dict[str, Any]:
         # Still allow requests, but expose the errors for easier debugging.
         _log_event(logging.WARNING, "task_load_errors", errors=_TASK_LOAD_ERRORS)
     return task
+
+
+def list_task_summaries() -> List[Dict[str, str]]:
+    if not _TASKS:
+        load_tasks()
+    return [
+        {
+            "task_id": task_id,
+            "description": str((_TASKS.get(task_id) or {}).get("description") or ""),
+        }
+        for task_id in sorted(_TASKS.keys())
+    ]
 
 
 # ---------------------------
