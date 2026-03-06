@@ -1,21 +1,36 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Collapsible } from "./Collapsible";
 import { CopyButton } from "./CopyButton";
 import { JsonView } from "./JsonView";
 import { resolveReceiptImageUrl } from "../utils/resolveReceiptImageUrl";
 import { fetchJson } from "../api/client";
 
+type EvalByRequestItem = {
+  gt_ok: boolean;
+  pred_ok: boolean;
+  mismatches_count: number;
+};
+
 type ItemInspectorProps = {
   item: Record<string, unknown> | null;
   runId?: string;
+  evalByRequestId?: Record<string, EvalByRequestItem>;
 };
 
-export function ItemInspector({ item, runId }: ItemInspectorProps) {
+function hasEvalFail(ev?: EvalByRequestItem): boolean {
+  if (!ev) {
+    return false;
+  }
+  return ev.mismatches_count > 0 || ev.gt_ok === false || ev.pred_ok === false;
+}
+
+export function ItemInspector({ item, runId, evalByRequestId }: ItemInspectorProps) {
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
 
   const requestId = typeof item?.request_id === "string" ? item.request_id : "";
+  const evalRow = requestId ? evalByRequestId?.[requestId] : undefined;
+  const evalStatus = evalRow ? (hasEvalFail(evalRow) ? "FAIL" : "OK") : "\u2014";
   const seedImage = useMemo(() => resolveReceiptImageUrl(item ?? null), [item]);
 
   useEffect(() => {
@@ -92,6 +107,17 @@ export function ItemInspector({ item, runId }: ItemInspectorProps) {
 
       <p><span className="text-xs text-slate-500">schema_valid:</span> {String(item.schema_valid ?? "-")}</p>
       <p><span className="text-xs text-slate-500">error:</span> {item.error == null ? "-" : JSON.stringify(item.error)}</p>
+      <div className="rounded border border-slate-200 p-2">
+        <p className="mb-1 text-xs text-slate-500">Eval</p>
+        <p><span className="text-xs text-slate-500">status:</span> <span className={evalStatus === "FAIL" ? "font-semibold text-amber-700" : ""}>{evalStatus}</span></p>
+        {evalRow ? (
+          <>
+            <p><span className="text-xs text-slate-500">mismatches_count:</span> {String(evalRow.mismatches_count)}</p>
+            <p><span className="text-xs text-slate-500">gt_ok:</span> {String(evalRow.gt_ok)}</p>
+            <p><span className="text-xs text-slate-500">pred_ok:</span> {String(evalRow.pred_ok)}</p>
+          </>
+        ) : null}
+      </div>
 
       {item.timings_ms && typeof item.timings_ms === "object" ? (
         <div>

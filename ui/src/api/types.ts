@@ -34,6 +34,15 @@ export type ApiErrorResponse = {
 
 export type BatchArtifact = Record<string, unknown> & {
   items?: Record<string, unknown>[];
+  eval?: {
+    summary?: Record<string, unknown>;
+    by_request_id?: Record<string, {
+      gt_ok: boolean;
+      pred_ok: boolean;
+      mismatches_count: number;
+    }>;
+    eval_artifact_rel?: string;
+  };
 };
 
 export type ExtractArtifact = Record<string, unknown>;

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { getRun } from "../api/runs";
+import type { BatchArtifact } from "../api/types";
 import { ErrorPanel } from "../components/ErrorPanel";
 import { useLayoutContext } from "../layout/LayoutContext";
 
@@ -17,6 +18,25 @@ type ArtifactItem = {
   } | null;
   [k: string]: unknown; // чтобы не потерять другие поля
 };
+
+type EvalByRequestItem = {
+  gt_ok: boolean;
+  pred_ok: boolean;
+  mismatches_count: number;
+};
+
+type BatchEval = {
+  summary?: Record<string, unknown>;
+  by_request_id?: Record<string, EvalByRequestItem>;
+};
+
+function hasEvalFail(ev?: EvalByRequestItem): boolean {
+  if (!ev) {
+    return false;
+  }
+  return ev.mismatches_count > 0 || ev.gt_ok === false || ev.pred_ok === false;
+}
+
 function compactError(value: unknown): string {
   if (value == null) {
     return "-";
@@ -38,6 +58,7 @@ export function RunDetailsPage() {
   const { setRunInspectorState } = useLayoutContext();
   const [onlySchemaInvalid, setOnlySchemaInvalid] = useState(false);
   const [onlyErrors, setOnlyErrors] = useState(false);
+  const [onlyEvalMismatches, setOnlyEvalMismatches] = useState(false);
   const [searchFile, setSearchFile] = useState("");
   const [focusedIndex, setFocusedIndex] = useState(0);
 
@@ -47,14 +68,23 @@ export function RunDetailsPage() {
     enabled: Boolean(run_id),
   });
 
-  const artifact = runQuery.data ?? {};
+  const artifact = (runQuery.data ?? {}) as BatchArtifact;
   const items = (Array.isArray(artifact.items) ? artifact.items : []) as ArtifactItem[];
+  const batchEval = (artifact.eval ?? null) as BatchEval | null;
+  const evalByRequestId = batchEval?.by_request_id ?? {};
+  const evalSummary = batchEval?.summary ?? null;
+  const mismatchedSamples = useMemo(
+    () => Object.values(evalByRequestId).filter((ev) => ev.mismatches_count > 0).length,
+    [evalByRequestId]
+  );
 
   const filteredItems = useMemo(() => {
     return items.filter((item) => {
       const schemaValid = item.schema_valid as boolean | null | undefined;
       const hasError = item.error !== null && item.error !== undefined;
       const file = typeof item.file === "string" ? item.file : "";
+      const requestId = typeof item.request_id === "string" ? item.request_id : "";
+      const ev = requestId ? evalByRequestId[requestId] : undefined;
 
       if (onlySchemaInvalid && schemaValid !== false) {
         return false;
@@ -65,9 +95,12 @@ export function RunDetailsPage() {
       if (searchFile && !file.toLowerCase().includes(searchFile.toLowerCase())) {
         return false;
       }
+      if (onlyEvalMismatches && !hasEvalFail(ev)) {
+        return false;
+      }
       return true;
     });
-  }, [items, onlyErrors, onlySchemaInvalid, searchFile]);
+  }, [evalByRequestId, items, onlyErrors, onlyEvalMismatches, onlySchemaInvalid, searchFile]);
 
   useEffect(() => {
     if (focusedIndex >= filteredItems.length) {
@@ -105,14 +138,29 @@ export function RunDetailsPage() {
 
       {!runQuery.isError && !runQuery.isLoading ? (
         <>
-          <div className="rounded-md border border-slate-200 bg-white p-4 text-sm">
-            <p><span className="font-medium">run_id:</span> {topRunId}</p>
-            <p><span className="font-medium">task_id:</span> {topTaskId}</p>
-            <p><span className="font-medium">created_at:</span> {topCreatedAt}</p>
-            <p><span className="font-medium">item_count:</span> {String(topItemCount)}</p>
-            <p><span className="font-medium">ok_count:</span> {String(topOkCount)}</p>
-            <p><span className="font-medium">error_count:</span> {String(topErrorCount)}</p>
-            <p><span className="font-medium">artifact_rel:</span> {topArtifactRel}</p>
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr),340px]">
+            <div className="rounded-md border border-slate-200 bg-white p-4 text-sm">
+              <p><span className="font-medium">run_id:</span> {topRunId}</p>
+              <p><span className="font-medium">task_id:</span> {topTaskId}</p>
+              <p><span className="font-medium">created_at:</span> {topCreatedAt}</p>
+              <p><span className="font-medium">item_count:</span> {String(topItemCount)}</p>
+              <p><span className="font-medium">ok_count:</span> {String(topOkCount)}</p>
+              <p><span className="font-medium">error_count:</span> {String(topErrorCount)}</p>
+              <p><span className="font-medium">artifact_rel:</span> {topArtifactRel}</p>
+            </div>
+            {evalSummary ? (
+              <div className="rounded-md border border-slate-200 bg-white p-4 text-sm">
+                <p className="mb-2 text-base font-semibold">Evaluation</p>
+                <p><span className="font-medium">items:</span> {String(evalSummary.items ?? "-")}</p>
+                <p><span className="font-medium">gt_found:</span> {String(evalSummary.gt_found ?? "-")}</p>
+                <p><span className="font-medium">gt_missing:</span> {String(evalSummary.gt_missing ?? "-")}</p>
+                <p><span className="font-medium">pred_found:</span> {String(evalSummary.pred_found ?? "-")}</p>
+                <p><span className="font-medium">pred_missing:</span> {String(evalSummary.pred_missing ?? "-")}</p>
+                <p><span className="font-medium">str_mode:</span> {String(evalSummary.str_mode ?? "-")}</p>
+                <p><span className="font-medium">decimal_sep:</span> {String(evalSummary.decimal_sep ?? "-")}</p>
+                <p><span className="font-medium">mismatched_samples:</span> {String(mismatchedSamples)}</p>
+              </div>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-4 rounded-md border border-slate-200 bg-white p-3 text-sm">
@@ -128,6 +176,15 @@ export function RunDetailsPage() {
             <label className="inline-flex items-center gap-2">
               <input type="checkbox" checked={onlyErrors} onChange={(e) => setOnlyErrors(e.target.checked)} />
               Only errors
+            </label>
+
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={onlyEvalMismatches}
+                onChange={(e) => setOnlyEvalMismatches(e.target.checked)}
+              />
+              Only eval mismatches
             </label>
 
             <label className="inline-flex items-center gap-2">
@@ -168,16 +225,19 @@ export function RunDetailsPage() {
                   <th className="px-3 py-2">schema_valid</th>
                   <th className="px-3 py-2">error</th>
                   <th className="px-3 py-2">total time</th>
+                  <th className="px-3 py-2">Mismatches</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredItems.map((item, idx) => {
                   const requestId = typeof item.request_id === "string" ? item.request_id : "";
                   const isFocused = idx === focusedIndex;
+                  const ev = requestId ? evalByRequestId[requestId] : undefined;
+                  const evalFail = hasEvalFail(ev);
                   return (
                     <tr
                       key={`${requestId || "req"}-${idx}`}
-                      className={`border-t border-slate-100 ${isFocused ? "bg-slate-100" : ""}`}
+                      className={`border-t border-slate-100 ${isFocused ? "bg-slate-100" : ""} ${evalFail ? "border-l-2 border-l-amber-300" : ""}`}
                       onClick={() => setFocusedIndex(idx)}
                     >
                       <td className="px-3 py-2">
@@ -197,13 +257,14 @@ export function RunDetailsPage() {
                       <td className="max-w-[360px] truncate px-3 py-2" title={compactError(item.error)}>
                         {compactError(item.error)}
                       </td>
-                      <td>{item.timings_ms?.total ?? "-"}</td>
+                      <td className="px-3 py-2">{item.timings_ms?.total ?? "-"}</td>
+                      <td className="px-3 py-2">{ev ? ev.mismatches_count : "\u2014"}</td>
                     </tr>
                   );
                 })}
                 {filteredItems.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={5} className="px-3 py-6 text-center text-slate-500">
                       No items matching filters.
                     </td>
                   </tr>

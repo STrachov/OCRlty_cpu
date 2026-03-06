@@ -63,7 +63,13 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
         </div> */}
         <div className="rounded border border-slate-200 p-3">
           <h3 className="mb-2 text-sm font-semibold">Item Inspector</h3>
-          <ItemInspector item={focusedItem} runId={run_id} />
+          <ItemInspector
+            item={focusedItem}
+            runId={run_id}
+            evalByRequestId={
+              (runData?.eval as { by_request_id?: Record<string, { gt_ok: boolean; pred_ok: boolean; mismatches_count: number }> } | undefined)?.by_request_id
+            }
+          />
         </div>
         <button
             type="button"
