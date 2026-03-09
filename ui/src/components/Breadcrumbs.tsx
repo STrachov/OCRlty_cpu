@@ -54,6 +54,16 @@ export function Breadcrumbs() {
     );
   }
 
+  if (location.pathname === "/runs/new") {
+    return (
+      <div className="flex items-center gap-2">
+        <CrumbLink to="/runs" label="Runs" />
+        <Sep />
+        <CrumbCurrent label="New run" />
+      </div>
+    );
+  }
+
   if (location.pathname === "/settings") {
     return (
       <div className="flex items-center gap-2">

@@ -4,6 +4,25 @@ export type MeResponse = {
   scopes: string[];
 };
 
+export type TaskSummary = {
+  task_id: string;
+  description: string;
+};
+
+export type TaskListResponse = {
+  items: TaskSummary[];
+};
+
+export type GroundTruthView = {
+  gt_id: string;
+  name: string;
+  created_at: string;
+};
+
+export type GroundTruthListResponse = {
+  items: GroundTruthView[];
+};
+
 export type RunSummary = {
   run_id?: string;
   created_at?: string | null;
@@ -19,6 +38,34 @@ export type RunsListResponse = {
   items: RunSummary[];
   limit: number;
   next_cursor: string | null;
+};
+
+export type JobCreateResponse = {
+  job_id: string;
+  status: string;
+  poll_url: string;
+};
+
+export type JobView = {
+  job_id: string;
+  kind: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  owner_key_id?: string | null;
+  owner_role?: string | null;
+  cancel_requested: boolean;
+  request: Record<string, unknown>;
+  progress?: Record<string, unknown> | null;
+  result_rel?: string | null;
+  result_meta?: Record<string, unknown> | null;
+  result_bytes?: number | null;
+  result_sha256?: string | null;
+  result?: Record<string, unknown> | null;
+  error_rel?: string | null;
+  error?: Record<string, unknown> | null;
 };
 
 export type ApiErrorPayload = {

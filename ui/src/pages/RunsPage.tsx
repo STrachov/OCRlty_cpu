@@ -49,9 +49,17 @@ export function RunsPage() {
 
   return (
     <section className="space-y-4">
-      <div>
-        <h2 className="text-xl font-semibold">Runs</h2>
-        <p className="text-sm text-slate-600">Recent batch runs from `/v1/runs`.</p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-semibold">Runs</h2>
+          <p className="text-sm text-slate-600">Recent batch runs from `/v1/runs`.</p>
+        </div>
+        <Link
+          to="/runs/new"
+          className="rounded bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+        >
+          New run
+        </Link>
       </div>
 
       {runsQuery.isLoading ? <p className="text-sm text-slate-600">Loading runs...</p> : null}

@@ -52,7 +52,7 @@ export async function fetchJson<T>(
     headers.set("Authorization", `Bearer ${apiKey}`);
   }
   headers.set("X-Request-ID", createClientRequestId());
-  if (init?.body && !headers.has("Content-Type")) {
+  if (init?.body && !headers.has("Content-Type") && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
 
