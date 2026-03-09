@@ -80,8 +80,8 @@ class BatchExtractDirJobRequest(BaseModel):
     concurrency: int = Field(default=4, ge=1, le=32)
     run_id: Optional[str] = Field(default=None)
 
-    gt_path: Optional[str] = Field(default=None)
-    gt_image_key: str = Field(default="file")
+    gt_id: Optional[str] = Field(default=None)
+    gt_record_key: Optional[str] = Field(default=None)
 
 
 class BatchRerunJobRequest(BaseModel):
@@ -93,8 +93,8 @@ class BatchRerunJobRequest(BaseModel):
     concurrency: int = Field(default=4, ge=1, le=32)
     run_id: Optional[str] = None
 
-    gt_path: Optional[str] = None
-    gt_image_key: str = Field(default="file")
+    gt_id: Optional[str] = None
+    gt_record_key: Optional[str] = Field(default=None)
 
 
 class JobCreateResponse(BaseModel):

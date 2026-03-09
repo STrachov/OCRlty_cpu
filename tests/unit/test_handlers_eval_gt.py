@@ -1,0 +1,68 @@
+import pytest
+
+from app import handlers
+from app.auth_store import ApiPrincipal
+from app.services.ground_truths_store import GroundTruthRecord
+
+
+def _principal() -> ApiPrincipal:
+    return ApiPrincipal(api_key_id=1, key_id="k1", role="client", scopes={"debug:run", "extract:run"})
+
+
+@pytest.mark.asyncio
+async def test_eval_batch_vs_gt_uses_gt_id(monkeypatch):
+    monkeypatch.setattr(handlers, "find_batch_artifact_path", lambda *_args, **_kwargs: "/tmp/batches/2026-03-06/run1.json")
+    monkeypatch.setattr(
+        handlers,
+        "read_artifact_json",
+        lambda _ref: {
+            "task_id": "receipt_fields_v1",
+            "items": [
+                {
+                    "file": "a.jpg",
+                    "request_id": "r1",
+                    "parsed": {"total_raw": "100"},
+                }
+            ],
+            "auth": {"key_id": "k1"},
+        },
+    )
+    monkeypatch.setattr(
+        handlers,
+        "_get_task",
+        lambda _task_id: {
+            "schema_value": {
+                "type": "object",
+                "properties": {
+                    "total_raw": {"type": "string"},
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(
+        handlers,
+        "load_ground_truth_json",
+        lambda **_: (
+            GroundTruthRecord(
+                gt_id="gt_1",
+                owner_key_id="k1",
+                name="gt.json",
+                s3_rel="ground_truths/gt_1.json",
+                created_at="2026-03-06T10:00:00Z",
+            ),
+            [{"file": "a.jpg", "total_raw": "100"}],
+        ),
+    )
+    monkeypatch.setattr(handlers, "save_eval_artifact", lambda payload, owner_key_id=None: "/tmp/evals/2026-03-06/e1.json")
+
+    resp = await handlers.eval_batch_vs_gt(
+        handlers.EvalBatchVsGTRequest(run_id="run1", gt_id="gt_1"),
+        principal=_principal(),
+    )
+
+    assert resp.gt_id == "gt_1"
+    assert resp.gt_name == "gt.json"
+    assert resp.summary is not None
+    assert resp.summary["gt_found"] == 1
+    assert resp.by_request_id is not None
+    assert resp.by_request_id["r1"]["mismatches_count"] == 0

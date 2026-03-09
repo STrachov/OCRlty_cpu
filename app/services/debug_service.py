@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 
+from app.auth_store import ApiPrincipal
 from app.services import artifacts
 from app.services import s3_service
 from app.settings import settings
@@ -133,7 +134,12 @@ class DebugService:
             raw = Path(ref).read_text(encoding="utf-8", errors="replace")
         return {"request_id": request_id, "date": artifacts.artifact_date_from_path(ref), "raw": raw}
 
-    async def eval_batch_vs_gt(self, req: handlers.EvalBatchVsGTRequest) -> handlers.EvalBatchVsGTResponse:
+    async def eval_batch_vs_gt(
+        self,
+        req: handlers.EvalBatchVsGTRequest,
+        *,
+        principal: ApiPrincipal,
+    ) -> handlers.EvalBatchVsGTResponse:
         _require_debug_enabled()
         # Safest: reuse existing implementation from handlers (logic-heavy, depends on many helpers)
-        return await handlers.eval_batch_vs_gt(req)
+        return await handlers.eval_batch_vs_gt(req, principal=principal)

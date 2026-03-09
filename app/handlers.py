@@ -33,6 +33,8 @@ from app.services.artifacts import (
     to_artifact_rel,
 )
 from app.services.s3_service import s3_enabled
+from app.services.ground_truths_service import load_ground_truth_json
+from app.services.ground_truths_store import GroundTruthsStore
 
 
 # Load .env for local development convenience.
@@ -331,9 +333,8 @@ class EvalBatchVsGTRequest(BaseModel):
     run_id: str = Field(..., description="Batch run_id to load from artifacts/batches/<day>/<run_id>.json")
     batch_date: Optional[str] = Field(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days.")
     max_days: int = Field(default=30, ge=1, le=365, description="How many recent days to search for batch artifact if batch_date is not provided.")
-    gt_path: str = Field(..., description="Path to GT JSON under DATA_ROOT or ARTIFACTS_DIR.")
-    gt_image_key: str = Field(default="image", description="Which GT key contains image filename or path (basename is used).")
-    gt_record_key: Optional[str] = Field(default=None, description="Optional: nested key in GT record containing the payload object to compare.")
+    gt_id: str = Field(..., description="Uploaded ground truth id.")
+    gt_record_key: Optional[str] = Field(default=None, description="Legacy compatibility field. Ignored.")
     include_worst: bool = Field(default=False, description="If true, include worst_samples in eval artifact.")
     limit: Optional[int] = Field(default=None, ge=1, le=100000, description="Limit number of batch items to evaluate.")
     str_mode: str = Field(default="exact", description="String comparison mode: exact | strip | strip_collapse")
@@ -347,7 +348,8 @@ class EvalBatchVsGTResponse(BaseModel):
     # Useful context (small)
     batch_date: Optional[str] = None
     task_id: Optional[str] = None
-    gt_path: str
+    gt_id: str
+    gt_name: Optional[str] = None
 
     # Pointers
     batch_artifact_rel: str
@@ -647,6 +649,8 @@ def _walk_schema(
 
 async def eval_batch_vs_gt(
     req: EvalBatchVsGTRequest,
+    *,
+    principal: ApiPrincipal,
 ) -> EvalBatchVsGTResponse:
     if req.str_mode not in {"exact", "strip", "strip_collapse"}:
         raise HTTPException(status_code=400, detail="str_mode must be one of: exact | strip | strip_collapse")
@@ -670,9 +674,9 @@ async def eval_batch_vs_gt(
     if not isinstance(schema_json, dict):
         raise HTTPException(status_code=500, detail=f"Task {task_id!r} has no schema_value (dict).")
 
-    # Load GT
-    gt_p = _validate_under_any_root(Path(req.gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
-    gt_obj = read_json_file(gt_p)
+    # Load GT from registry + S3
+    gt_store = GroundTruthsStore(settings.DATABASE_URL)
+    gt_meta, gt_obj = load_ground_truth_json(store=gt_store, principal=principal, gt_id=req.gt_id)
 
     if isinstance(gt_obj, dict):
         gt_records = list(gt_obj.values())
@@ -685,9 +689,7 @@ async def eval_batch_vs_gt(
     for rec in gt_records:
         if not isinstance(rec, dict):
             continue
-        img_val = rec.get(req.gt_image_key)
-        if img_val is None and req.gt_image_key != "image_file":
-            img_val = rec.get("image_file")
+        img_val = rec.get("file")
         if img_val is None:
             continue
         base = Path(str(img_val)).name
@@ -778,11 +780,6 @@ async def eval_batch_vs_gt(
         #     pred_missing += 1
 
         gt_payload: Any = gt_rec if gt_rec is not None else _MISSING
-        if gt_payload is not _MISSING and req.gt_record_key:
-            if isinstance(gt_payload, dict) and req.gt_record_key in gt_payload:
-                gt_payload = gt_payload.get(req.gt_record_key)
-            else:
-                gt_payload = _MISSING
 
         mismatches: List[Dict[str, Any]] = []
         if gt_payload is not _MISSING and pred_obj is not _MISSING:
@@ -846,7 +843,8 @@ async def eval_batch_vs_gt(
         "run_id": req.run_id,
         "batch_date": batch_date,
         "task_id": task_id,
-        "gt_path": str(gt_p),
+        "gt_id": req.gt_id,
+        "gt_name": gt_meta.name,
         "batch_artifact_rel": to_artifact_rel(batch_path),
         "summary": {
             "items": len(items),
@@ -882,7 +880,8 @@ async def eval_batch_vs_gt(
         run_id=req.run_id,
         batch_date=batch_date,
         task_id=task_id,
-        gt_path=str(gt_p),
+        gt_id=req.gt_id,
+        gt_name=gt_meta.name,
         batch_artifact_rel=to_artifact_rel(batch_path),
         eval_artifact_rel=to_artifact_rel(eval_artifact_ref),
 

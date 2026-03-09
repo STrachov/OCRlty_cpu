@@ -113,9 +113,8 @@ class BatchExtractRequest(BaseModel):
     glob: str = Field(default="**/*", description="Glob for images_dir scan.")
     concurrency: int = Field(default=4, ge=1, le=64)
     run_id: Optional[str] = Field(default=None, description="Optional run id. If omitted - generated.")
-    gt_path: Optional[str] = Field(default=None, description="Optional GT JSON path to auto-run eval (debug only).")
-    gt_image_key: str = Field(default="image", description="GT key with image filename/path.")
-    gt_record_key: Optional[str] = Field(default=None, description="Optional: nested key in GT record with payload to compare.")
+    gt_id: Optional[str] = Field(default=None, description="Optional uploaded ground truth id to auto-run eval (debug only).")
+    gt_record_key: Optional[str] = Field(default=None, description="Legacy compatibility field. Ignored.")
     include_worst: bool = Field(default=False)
     limit: Optional[int] = Field(default=None, ge=1, le=100000)
 
@@ -132,9 +131,8 @@ class BatchExtractInputsRequest(BaseModel):
     concurrency: int = Field(default=4, ge=1, le=64)
     run_id: Optional[str] = Field(default=None, description="Optional run id. If omitted - generated.")
     inputs: List[BatchInputRef] = Field(..., description="List of persisted input refs to process.")
-    gt_path: Optional[str] = Field(default=None, description="Optional GT JSON path to auto-run eval (debug only).")
-    gt_image_key: str = Field(default="image", description="GT key with image filename/path.")
-    gt_record_key: Optional[str] = Field(default=None, description="Optional: nested key in GT record with payload to compare.")
+    gt_id: Optional[str] = Field(default=None, description="Optional uploaded ground truth id to auto-run eval (debug only).")
+    gt_record_key: Optional[str] = Field(default=None, description="Legacy compatibility field. Ignored.")
     include_worst: bool = Field(default=False)
     limit: Optional[int] = Field(default=None, ge=1, le=100000)
 
@@ -174,9 +172,8 @@ class BatchRerunRequest(BaseModel):
     max_days: int = Field(default=30, ge=1, le=365)
     concurrency: int = Field(default=4, ge=1, le=64)
     new_run_id: Optional[str] = Field(default=None, description="New run_id. If omitted - generated.")
-    gt_path: Optional[str] = Field(default=None, description="Optional GT JSON path to auto-run eval (debug only).")
-    gt_image_key: str = Field(default="image", description="GT key with image filename/path.")
-    gt_record_key: Optional[str] = Field(default=None, description="Optional: nested key in GT record with payload to compare.")
+    gt_id: Optional[str] = Field(default=None, description="Optional uploaded ground truth id to auto-run eval (debug only).")
+    gt_record_key: Optional[str] = Field(default=None, description="Legacy compatibility field. Ignored.")
     include_worst: bool = Field(default=False)
     limit: Optional[int] = Field(default=None, ge=1, le=100000)
 
@@ -823,28 +820,23 @@ async def _run_eval_batch_vs_gt(
     principal: ApiPrincipal,
     batch_path: Union[str, Path],
     run_id: str,
-    gt_path: str,
-    gt_image_key: str,
+    gt_id: str,
     gt_record_key: Optional[str],
     include_worst: bool,
     limit: Optional[int],
 ) -> Dict[str, Any]:
     _debug_allowed(principal)
 
-    # validate gt_path is a local file under allowed roots
-    gt_p = _validate_under_any_root(Path(gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
-
     eval_req = EvalBatchVsGTRequest(
         run_id=run_id,
         batch_date=artifact_date_from_path(batch_path),
-        gt_path=str(gt_p),
-        gt_image_key=gt_image_key,
+        gt_id=gt_id,
         gt_record_key=gt_record_key,
         include_worst=include_worst,
         limit=limit,
     )
 
-    eval_resp = await eval_batch_vs_gt(eval_req)
+    eval_resp = await eval_batch_vs_gt(eval_req, principal=principal)
     eval_dict = eval_resp.model_dump()
 
     # attach eval to batch artifact (supports local + S3)
@@ -870,8 +862,7 @@ async def _run_batch_extract_core(
     concurrency: int,
     principal: ApiPrincipal,
     vllm_client: VLLMClient,
-    gt_path: Optional[str] = None,
-    gt_image_key: str = "image",
+    gt_id: Optional[str] = None,
     gt_record_key: Optional[str] = None,
     include_worst: bool = False,
     limit: Optional[int] = None,
@@ -1029,14 +1020,13 @@ async def _run_batch_extract_core(
     await _emit_progress(stage="succeeded", force=True)
 
     eval_info: Optional[Dict[str, Any]] = None
-    if gt_path:
+    if gt_id:
         try:
             eval_info = await _run_eval_batch_vs_gt(
                 principal=principal,
                 batch_path=batch_ref,
                 run_id=run_id,
-                gt_path=gt_path,
-                gt_image_key=gt_image_key,
+                gt_id=gt_id,
                 gt_record_key=gt_record_key,
                 include_worst=include_worst,
                 limit=limit,
@@ -1088,8 +1078,7 @@ async def batch_extract(
         concurrency=req.concurrency,
         principal=principal,
         vllm_client=vllm_client,
-        gt_path=req.gt_path,
-        gt_image_key=req.gt_image_key,
+        gt_id=req.gt_id,
         gt_record_key=req.gt_record_key,
         include_worst=req.include_worst,
         limit=req.limit,
@@ -1138,8 +1127,7 @@ async def batch_extract_inputs(
         concurrency=req.concurrency,
         principal=principal,
         vllm_client=vllm_client,
-        gt_path=req.gt_path,
-        gt_image_key=req.gt_image_key,
+        gt_id=req.gt_id,
         gt_record_key=req.gt_record_key,
         include_worst=req.include_worst,
         limit=req.limit,
@@ -1157,8 +1145,7 @@ async def batch_extract_upload(
     concurrency: int,
     run_id: Optional[str],
     files: List[UploadFile],
-    gt_path: Optional[str],
-    gt_image_key: str,
+    gt_id: Optional[str],
     gt_record_key: Optional[str],
     include_worst: bool,
     limit: Optional[int],
@@ -1187,8 +1174,7 @@ async def batch_extract_upload(
         concurrency=concurrency,
         principal=principal,
         vllm_client=vllm_client,
-        gt_path=gt_path,
-        gt_image_key=gt_image_key,
+        gt_id=gt_id,
         gt_record_key=gt_record_key,
         include_worst=include_worst,
         limit=limit,
@@ -1246,8 +1232,7 @@ async def batch_extract_rerun(
         concurrency=req.concurrency,
         principal=principal,
         vllm_client=vllm_client,
-        gt_path=req.gt_path,
-        gt_image_key=req.gt_image_key,
+        gt_id=req.gt_id,
         gt_record_key=req.gt_record_key,
         include_worst=req.include_worst,
         limit=req.limit,

@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from app.auth import require_scopes
+from app.auth_store import ApiPrincipal
 from app.schemas.api_error import common_error_responses
 from app.services.debug_service import DebugService
 from app.settings import settings
@@ -85,6 +86,7 @@ async def read_artifact_raw_text(
 )
 async def eval_batch_vs_gt(
     req: handlers.EvalBatchVsGTRequest,
+    principal: ApiPrincipal = Depends(require_scopes(["debug:run"])),
     svc: DebugService = Depends(get_debug_service),
 ) -> handlers.EvalBatchVsGTResponse:
-    return await svc.eval_batch_vs_gt(req)
+    return await svc.eval_batch_vs_gt(req, principal=principal)
