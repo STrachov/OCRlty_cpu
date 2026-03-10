@@ -288,14 +288,44 @@ def _estimate_prompt_tokens(text: str) -> int:
     return max(1, int(len(text) / 3.5))
 
 
-_TOO_LONG_PAT = re.compile(r"decoder prompt too long", re.IGNORECASE)
+_TOO_LONG_PAT = re.compile(
+    r"(decoder prompt too long|decoder prompt .* longer than the maximum model length|maximum model length)",
+    re.IGNORECASE,
+)
+_CTX_LEN_PAT = re.compile(r"length\s+(\d+).*maximum model length of\s+(\d+)", re.IGNORECASE)
 
-def _compute_retry_scale(*, attempt: int, max_attempts: int) -> float:
+
+def _is_context_too_long_error(*, status_code: int, detail: Any) -> bool:
+    detail_s = str(detail) if not isinstance(detail, str) else detail
+    return (int(status_code) in {400, 413, 422, 500, 502}) and (_TOO_LONG_PAT.search(detail_s) is not None)
+
+def _extract_context_lengths(detail: Any) -> Optional[Tuple[int, int]]:
+    detail_s = str(detail) if not isinstance(detail, str) else detail
+    m = _CTX_LEN_PAT.search(detail_s or "")
+    if not m:
+        return None
+    try:
+        current_len = int(m.group(1))
+        max_len = int(m.group(2))
+    except Exception:
+        return None
+    if current_len <= 0 or max_len <= 0:
+        return None
+    return current_len, max_len
+
+
+def _compute_retry_scale(*, attempt: int, max_attempts: int, detail: Any = None) -> float:
+    ctx = _extract_context_lengths(detail)
+    if ctx is not None:
+        current_len, max_len = ctx
+        adaptive = (max_len / current_len) * 0.9
+        return max(0.10, min(0.95, adaptive))
+
     # progressively shrink
     if max_attempts <= 1:
         return 1.0
-    # 1.0 -> 0.75 -> 0.6 -> 0.5 ...
-    return max(0.25, 1.0 - (attempt - 1) * (0.5 / max(1, max_attempts - 1)))
+    # 1.0 -> 0.6 -> 0.4 -> 0.3 ...
+    return max(0.10, 1.0 - (attempt - 1) * (0.7 / max(1, max_attempts - 1)))
 
 
 def _resize_base64_image_by_scale(image_base64: str, *, scale: float) -> str:
@@ -572,7 +602,7 @@ async def extract(
     }
 
     attempt = 1
-    max_attempts = int(getattr(settings, "VLLM_CONTEXT_MAX_ATTEMPTS", 2) or 2)
+    max_attempts = int(getattr(settings, "VLLM_CONTEXT_MAX_ATTEMPTS", 3) or 3)
     resize_scale = 1.0
     current_b64 = req_image_base64
 
@@ -661,17 +691,12 @@ async def extract(
             )
 
         except HTTPException as e:
-            # context too long -> try resize
-            detail_s = str(e.detail) if not isinstance(e.detail, str) else e.detail
-            is_too_long = (e.status_code in {400, 413, 422, 500, 502}) and (
-                _TOO_LONG_PAT.search(detail_s) is not None
-            )
-
+            is_too_long = _is_context_too_long_error(status_code=e.status_code, detail=e.detail)
             error_history.append({"attempt": attempt, "http_status": e.status_code, "detail": e.detail})
 
             if is_too_long and attempt < max_attempts and Image is not None:
                 attempt += 1
-                resize_scale *= _compute_retry_scale(attempt=attempt, max_attempts=max_attempts)
+                resize_scale *= _compute_retry_scale(attempt=attempt, max_attempts=max_attempts, detail=e.detail)
                 try:
                     current_b64 = await asyncio.to_thread(_resize_base64_image_by_scale, current_b64, scale=resize_scale)
                     messages = _build_messages(prompt_text=prompt_text, image_base64=current_b64, mime_type=mime_type)
@@ -694,6 +719,55 @@ async def extract(
                 "schema_valid": False,
                 "schema_errors": None,
                 "error": _mk_err("extract_failed", "Extraction failed", detail={"status": e.status_code, "detail": e.detail}),
+                "error_history": error_history or None,
+                "meta": {"attempts": attempt, "resize_scale": resize_scale},
+            }
+            artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
+            return ExtractResponse(
+                request_id=request_id,
+                created_at=created_at,
+                task_id=req.task_id,
+                artifact_rel=to_artifact_rel(artifact_ref),
+                model_id=MODEL_ID,
+                prompt_sha256=prompt_sha,
+                schema_sha256=schema_sha,
+                raw=None,
+                parsed=None,
+                schema_valid=False,
+                schema_errors=None,
+                error=artifact["error"],
+                error_history=error_history or None,
+                timings_ms=timings_ms,
+                meta=artifact["meta"],
+            )
+        except VLLMHTTPError as e:
+            is_too_long = _is_context_too_long_error(status_code=e.status_code, detail=e.body_text)
+            error_history.append({"attempt": attempt, "http_status": e.status_code, "detail": e.body_text})
+
+            if is_too_long and attempt < max_attempts and Image is not None:
+                attempt += 1
+                resize_scale *= _compute_retry_scale(attempt=attempt, max_attempts=max_attempts, detail=e.body_text)
+                try:
+                    current_b64 = await asyncio.to_thread(_resize_base64_image_by_scale, current_b64, scale=resize_scale)
+                    messages = _build_messages(prompt_text=prompt_text, image_base64=current_b64, mime_type=mime_type)
+                    continue
+                except Exception as resize_e:
+                    error_history.append({"attempt": attempt, "resize_error": str(resize_e)})
+
+            timings_ms: Dict[str, int] = {
+                "vllm": int(vllm_ms),
+                "parse_validate": int(parse_validate_ms),
+                "total": int(round((time.monotonic() - t_total0) * 1000)),
+            }
+
+            artifact = {
+                **artifact_base,
+                "timings_ms": timings_ms,
+                "raw": None,
+                "parsed": None,
+                "schema_valid": False,
+                "schema_errors": None,
+                "error": _mk_err("extract_failed", "Extraction failed", detail={"status": e.status_code, "detail": e.body_text}),
                 "error_history": error_history or None,
                 "meta": {"attempts": attempt, "resize_scale": resize_scale},
             }

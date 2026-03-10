@@ -46,6 +46,28 @@ def test_apply_debug_overrides_requires_scope(monkeypatch, principal):
     assert exc.value.status_code == 403
 
 
+def test_is_context_too_long_error_matches_vllm_message():
+    assert extract_service._is_context_too_long_error(
+        status_code=400,
+        detail="The decoder prompt (length 9591) is longer than the maximum model length of 4096",
+    )
+
+
+def test_extract_context_lengths_parses_vllm_message():
+    assert extract_service._extract_context_lengths(
+        "{'error': {'message': 'The decoder prompt (length 9597) is longer than the maximum model length of 4096.'}}"
+    ) == (9597, 4096)
+
+
+def test_compute_retry_scale_uses_adaptive_ratio_from_error():
+    scale = extract_service._compute_retry_scale(
+        attempt=2,
+        max_attempts=3,
+        detail="The decoder prompt (length 9597) is longer than the maximum model length of 4096",
+    )
+    assert 0.10 < scale < 0.50
+
+
 @pytest.mark.asyncio
 async def test_vllm_call_with_retries_retries_then_success(monkeypatch):
     client = AsyncMock()
