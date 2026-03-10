@@ -4,6 +4,32 @@ export type MeResponse = {
   scopes: string[];
 };
 
+export type RuntimeSettingKey =
+  | "VLLM_BASE_URL"
+  | "VLLM_API_KEY"
+  | "VLLM_MODEL"
+  | "INFERENCE_BACKEND"
+  | "DEBUG_MODE"
+  | "S3_PRESIGN_TTL_S";
+
+export type RuntimeSettingItem = {
+  key: RuntimeSettingKey;
+  value: string | number | boolean | null;
+  effective_value: string | number | boolean | null;
+  source: "db" | "env";
+  updated_at: string | null;
+  is_secret: boolean;
+  is_set: boolean;
+};
+
+export type RuntimeSettingsResponse = {
+  items: RuntimeSettingItem[];
+};
+
+export type UpdateRuntimeSettingRequest = {
+  value: string;
+};
+
 export type TaskSummary = {
   task_id: string;
   description: string;

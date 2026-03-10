@@ -7,12 +7,31 @@ import type {
   JobCreateResponse,
   JobView,
   MeResponse,
+  RuntimeSettingItem,
+  RuntimeSettingsResponse,
   RunsListResponse,
   TaskListResponse,
+  UpdateRuntimeSettingRequest,
 } from "./types";
 
 export async function getMe(): Promise<MeResponse> {
   const { data } = await fetchJson<MeResponse>("/v1/me");
+  return data;
+}
+
+export async function listRuntimeSettings(): Promise<RuntimeSettingsResponse> {
+  const { data } = await fetchJson<RuntimeSettingsResponse>("/v1/admin/runtime_settings");
+  return data;
+}
+
+export async function updateRuntimeSetting(
+  key: string,
+  payload: UpdateRuntimeSettingRequest
+): Promise<RuntimeSettingItem> {
+  const { data } = await fetchJson<RuntimeSettingItem>(`/v1/admin/runtime_settings/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
   return data;
 }
 
