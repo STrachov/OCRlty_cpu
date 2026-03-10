@@ -15,6 +15,7 @@ from app.routers.runs import router as runs_router
 from app.routers.inputs import router as inputs_router
 from app.routers.tasks import router as tasks_router
 from app.routers.ground_truths import router as ground_truths_router
+from app.routers.admin_runtime_settings import router as admin_runtime_settings_router
 from app.error_handlers import register_error_handlers
 from app.handlers import make_request_id, REQUEST_ID_CTX, setup_logging, load_tasks
 from app.services.artifacts import artifact_index_init
@@ -25,6 +26,7 @@ from app.vllm_client import VLLMClient
 from app.routers.jobs import router as jobs_router
 from app.services.jobs_store import JobsStore
 from app.services.ground_truths_store import GroundTruthsStore
+from app.services.runtime_settings_store import RuntimeSettingsStore
 from app.services.jobs_runner import LocalJobRunner, CeleryJobRunner
 
 @asynccontextmanager
@@ -58,6 +60,13 @@ async def lifespan(app: FastAPI):
             logging.getLogger("ocrlty").exception("ground_truths_init_failed")
 
         try:
+            rss = RuntimeSettingsStore(settings.DATABASE_URL)
+            rss.ensure_init()
+            app.state.runtime_settings_store = rss
+        except Exception:
+            logging.getLogger("ocrlty").exception("runtime_settings_init_failed")
+
+        try:
             load_tasks()
         except Exception:
             logging.getLogger("ocrlty").exception("tasks_load_failed")
@@ -84,11 +93,6 @@ async def lifespan(app: FastAPI):
             },
         )
         app.state.vllm_http = http
-        app.state.vllm_client = VLLMClient(
-            http,
-            base_url=settings.VLLM_BASE_URL,
-            api_key=settings.VLLM_API_KEY,
-        )
 
         # --- Jobs store/runner (best-effort) ---
         try:
@@ -183,3 +187,4 @@ app.include_router(runs_router)
 app.include_router(inputs_router)
 app.include_router(tasks_router)
 app.include_router(ground_truths_router)
+app.include_router(admin_runtime_settings_router)

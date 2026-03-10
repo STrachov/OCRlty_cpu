@@ -35,6 +35,7 @@ from app.services.artifacts import (
 from app.services.s3_service import s3_enabled
 from app.services.ground_truths_service import load_ground_truth_json
 from app.services.ground_truths_store import GroundTruthsStore
+from app.services.runtime_config import get_bool, get_str
 
 
 # Load .env for local development convenience.
@@ -305,10 +306,14 @@ def _validate_under_any_root(p: Path, *, roots: List[Path]) -> Path:
 # vLLM client DI helper (used by routers)
 # ---------------------------
 def get_vllm_client(request: Request) -> VLLMClient:
-    vc = getattr(request.app.state, "vllm_client", None)
-    if vc is None:
-        raise HTTPException(status_code=500, detail="vLLM client is not initialized")
-    return vc
+    http = getattr(request.app.state, "vllm_http", None)
+    if http is None:
+        raise HTTPException(status_code=500, detail="vLLM HTTP client is not initialized")
+    return VLLMClient(
+        http,
+        base_url=get_str("VLLM_BASE_URL", settings.VLLM_BASE_URL),
+        api_key=get_str("VLLM_API_KEY", settings.VLLM_API_KEY),
+    )
 
 
 # ---------------------------
@@ -321,9 +326,9 @@ async def health():
     return {
         "ok": True,
         "auth_enabled": bool(settings.AUTH_ENABLED),
-        "debug_mode": bool(settings.DEBUG_MODE),
-        "inference_backend": settings.INFERENCE_BACKEND,
-        "model": settings.VLLM_MODEL,
+        "debug_mode": get_bool("DEBUG_MODE", settings.DEBUG_MODE),
+        "inference_backend": get_str("INFERENCE_BACKEND", settings.INFERENCE_BACKEND),
+        "model": get_str("VLLM_MODEL", settings.VLLM_MODEL),
     }
 
 # ---------------------------

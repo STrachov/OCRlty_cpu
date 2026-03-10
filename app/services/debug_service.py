@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 from app.auth_store import ApiPrincipal
 from app.services import artifacts
 from app.services import s3_service
+from app.services.runtime_config import get_bool
 from app.settings import settings
 from app import handlers
 
@@ -25,7 +26,7 @@ from app import handlers
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve() 
 
 def _require_debug_enabled() -> None:
-    if not settings.DEBUG_MODE:
+    if not get_bool("DEBUG_MODE", settings.DEBUG_MODE):
         # Hide existence
         raise HTTPException(status_code=404, detail="Not found")
 

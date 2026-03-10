@@ -36,6 +36,7 @@ from app.services.artifacts import (
     to_artifact_rel,
 )
 from app.services.s3_service import s3_enabled, s3_get_bytes, s3_key, s3_put_bytes, s3_put_json, s3_put_json_overwrite
+from app.services.runtime_config import get_bool, get_str
 
 from app.handlers import (
     _ctx_request_id,
@@ -193,7 +194,7 @@ def _mk_err(code: str, message: str, *, detail: Optional[Dict[str, Any]] = None)
 
 
 def _debug_enabled() -> bool:
-    return bool(getattr(settings, "DEBUG_MODE", False))
+    return get_bool("DEBUG_MODE", getattr(settings, "DEBUG_MODE", False))
 
 
 def _debug_allowed(principal: ApiPrincipal) -> None:
@@ -588,7 +589,7 @@ async def extract(
 
             t_v0 = time.monotonic()
 
-            if str(settings.INFERENCE_BACKEND).lower() == "mock":
+            if get_str("INFERENCE_BACKEND", settings.INFERENCE_BACKEND).lower() == "mock":
             #if getattr(settings, "MOCK_VLLM", False):
                 resp = _mock_chat_completions(schema_json)
             else:

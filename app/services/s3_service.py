@@ -21,6 +21,7 @@ import botocore
 from botocore.config import Config as BotoConfig
 from fastapi import HTTPException
 
+from app.services.runtime_config import get_int
 from app.settings import settings
 
 
@@ -295,11 +296,11 @@ def s3_presign_get_url(*, key: str, expires_s: int | None = None) -> str:
     if not s3_enabled():
         raise HTTPException(status_code=501, detail="S3 is not enabled.")
 
-    ttl = settings.S3_PRESIGN_TTL_S if expires_s is None else expires_s
+    ttl = get_int("S3_PRESIGN_TTL_S", settings.S3_PRESIGN_TTL_S) if expires_s is None else expires_s
     try:
         ttl_i = int(ttl)
     except Exception:
-        ttl_i = int(settings.S3_PRESIGN_TTL_S or 3600)
+        ttl_i = int(get_int("S3_PRESIGN_TTL_S", settings.S3_PRESIGN_TTL_S) or 3600)
     ttl_i = max(1, min(ttl_i, 86400))
 
     return s3_client().generate_presigned_url(

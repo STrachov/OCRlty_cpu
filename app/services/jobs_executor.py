@@ -8,6 +8,7 @@ import httpx
 
 from app.auth_store import ApiPrincipal
 from app.handlers import setup_logging
+from app.services.runtime_config import get_str
 from app.settings import settings
 from app.services import extract_service
 from app.vllm_client import VLLMClient
@@ -30,11 +31,7 @@ def _get_vllm_client() -> VLLMClient:
         pool=float(getattr(settings, "VLLM_POOL_TIMEOUT_S", 5.0) or 5.0),
     )
     _http = httpx.AsyncClient(timeout=timeout)
-    _vllm = VLLMClient(
-        _http,
-        base_url=str(settings.VLLM_BASE_URL),
-        api_key=str(getattr(settings, "VLLM_API_KEY", "") or ""),
-    )
+    _vllm = VLLMClient(_http, base_url="", api_key="")
     return _vllm
 
 
@@ -102,7 +99,12 @@ async def execute_job(
       - batch_extract_dir      (legacy compatibility with /v1/jobs router)
     """
     setup_logging()
-    vllm = _get_vllm_client()
+    http_client = _get_vllm_client()._http
+    vllm = VLLMClient(
+        http_client,
+        base_url=get_str("VLLM_BASE_URL", settings.VLLM_BASE_URL),
+        api_key=get_str("VLLM_API_KEY", getattr(settings, "VLLM_API_KEY", "") or ""),
+    )
     principal = _principal_from_owner(owner)
 
     if kind == "extract":

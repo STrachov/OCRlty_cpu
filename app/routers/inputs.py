@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.auth import require_scopes
 from app.auth_store import ApiPrincipal
 from app.schemas.api_error import common_error_responses
+from app.services.runtime_config import get_int
 from app.services.s3_service import s3_key, s3_presign_get_url
 from app.settings import settings
 
@@ -41,7 +42,7 @@ def presign_input(
 
     key = s3_key(rel)
     try:
-        effective_expires_in = int(settings.S3_PRESIGN_TTL_S if expires_in is None else expires_in)
+        effective_expires_in = int(get_int("S3_PRESIGN_TTL_S", settings.S3_PRESIGN_TTL_S) if expires_in is None else expires_in)
     except Exception:
         effective_expires_in = 3600
     effective_expires_in = max(1, min(effective_expires_in, 86400))

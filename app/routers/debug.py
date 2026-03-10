@@ -6,6 +6,7 @@ from app.auth import require_scopes
 from app.auth_store import ApiPrincipal
 from app.schemas.api_error import common_error_responses
 from app.services.debug_service import DebugService
+from app.services.runtime_config import get_bool
 from app.settings import settings
 from app import handlers
 
@@ -14,7 +15,7 @@ _ERR = common_error_responses(400, 401, 403, 404, 422, 500)
 
 
 def _debug_enabled() -> None:
-    if not settings.DEBUG_MODE:
+    if not get_bool("DEBUG_MODE", settings.DEBUG_MODE):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Not found")
 
