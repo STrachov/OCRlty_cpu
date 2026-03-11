@@ -52,7 +52,6 @@ DATA_ROOT = APP_ROOT.parent.resolve()
 DEFAULT_IMAGES_DIR = str((DATA_ROOT / "data").resolve())
 
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
-MODEL_ID = settings.VLLM_MODEL
 
 
 # ---------------------------

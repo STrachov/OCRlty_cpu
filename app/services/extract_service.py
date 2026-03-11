@@ -50,7 +50,6 @@ from app.handlers import (
     ARTIFACTS_DIR,
     DATA_ROOT,
     DEFAULT_IMAGES_DIR,
-    MODEL_ID,
     make_request_id,
 )
 from app.handlers import EvalBatchVsGTRequest, eval_batch_vs_gt
@@ -368,6 +367,7 @@ def _retry_delay_s(*, attempt: int, base: float = 0.8, cap: float = 10.0) -> flo
 async def _vllm_call_with_retries(
     *,
     vllm_client: VLLMClient,
+    model_id: str,
     messages: List[Dict[str, Any]],
     temperature: float,
     max_tokens: int,
@@ -379,7 +379,7 @@ async def _vllm_call_with_retries(
     for attempt in range(1, max_attempts + 1):
         try:
             return await vllm_client.chat_completions(
-                model=MODEL_ID,
+                model=model_id,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -563,6 +563,7 @@ async def extract(
 
     prompt_sha = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
     schema_sha = hashlib.sha256(json.dumps(schema_json, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    model_id = get_str("VLLM_MODEL", settings.VLLM_MODEL)
 
     # Resolve image input
     mime_type = (req.mime_type or "image/jpeg").strip() or "image/jpeg"
@@ -596,7 +597,7 @@ async def extract(
         "task_id": req.task_id,
         "auth": {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))},
         "input": _sanitize_input_for_artifact(req),
-        "model_id": MODEL_ID,
+        "model_id": model_id,
         "prompt_sha256": prompt_sha,
         "schema_sha256": schema_sha,
     }
@@ -625,6 +626,7 @@ async def extract(
             else:
                 resp = await _vllm_call_with_retries(
                     vllm_client=vllm_client,
+                    model_id=model_id,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -677,7 +679,7 @@ async def extract(
                 created_at=created_at,
                 task_id=req.task_id,
                 artifact_rel=to_artifact_rel(artifact_ref),
-                model_id=MODEL_ID,
+                model_id=model_id,
                 prompt_sha256=prompt_sha,
                 schema_sha256=schema_sha,
                 raw=raw,
@@ -728,7 +730,7 @@ async def extract(
                 created_at=created_at,
                 task_id=req.task_id,
                 artifact_rel=to_artifact_rel(artifact_ref),
-                model_id=MODEL_ID,
+                model_id=model_id,
                 prompt_sha256=prompt_sha,
                 schema_sha256=schema_sha,
                 raw=None,
@@ -777,7 +779,7 @@ async def extract(
                 created_at=created_at,
                 task_id=req.task_id,
                 artifact_rel=to_artifact_rel(artifact_ref),
-                model_id=MODEL_ID,
+                model_id=model_id,
                 prompt_sha256=prompt_sha,
                 schema_sha256=schema_sha,
                 raw=None,
@@ -814,7 +816,7 @@ async def extract(
                 created_at=created_at,
                 task_id=req.task_id,
                 artifact_rel=to_artifact_rel(artifact_ref),
-                model_id=MODEL_ID,
+                model_id=model_id,
                 prompt_sha256=prompt_sha,
                 schema_sha256=schema_sha,
                 raw=None,

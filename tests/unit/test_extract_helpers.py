@@ -85,6 +85,7 @@ async def test_vllm_call_with_retries_retries_then_success(monkeypatch):
 
     out = await extract_service._vllm_call_with_retries(
         vllm_client=client,
+        model_id="model-x",
         messages=[],
         temperature=0.0,
         max_tokens=16,
@@ -110,6 +111,7 @@ async def test_vllm_call_with_retries_raises_after_max_attempts(monkeypatch):
     with pytest.raises(httpx.ReadTimeout):
         await extract_service._vllm_call_with_retries(
             vllm_client=client,
+            model_id="model-x",
             messages=[],
             temperature=0.0,
             max_tokens=16,
@@ -117,3 +119,20 @@ async def test_vllm_call_with_retries_raises_after_max_attempts(monkeypatch):
         )
 
     assert client.chat_completions.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_vllm_call_with_retries_uses_passed_model_id():
+    client = AsyncMock()
+    client.chat_completions.return_value = {"choices": [{"message": {"content": "{}"}}]}
+
+    await extract_service._vllm_call_with_retries(
+        vllm_client=client,
+        model_id="Qwen/Qwen3-VL-32B-Instruct-FP8",
+        messages=[],
+        temperature=0.0,
+        max_tokens=16,
+        response_format={"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}},
+    )
+
+    assert client.chat_completions.await_args.kwargs["model"] == "Qwen/Qwen3-VL-32B-Instruct-FP8"
