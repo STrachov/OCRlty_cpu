@@ -606,6 +606,7 @@ async def extract(
     max_attempts = int(getattr(settings, "VLLM_CONTEXT_MAX_ATTEMPTS", 3) or 3)
     resize_scale = 1.0
     current_b64 = req_image_base64
+    last_raw: Any = None
 
     while True:
         try:
@@ -636,6 +637,7 @@ async def extract(
             vllm_ms += int(round((time.monotonic() - t_v0) * 1000))
             content = resp["choices"][0]["message"]["content"]
             raw = content if _raw_allowed(principal) else None
+            last_raw = raw
 
             t_p0 = time.monotonic()
 
@@ -716,7 +718,7 @@ async def extract(
             artifact = {
                 **artifact_base,
                 "timings_ms": timings_ms,
-                "raw": None,
+                "raw": last_raw,
                 "parsed": None,
                 "schema_valid": False,
                 "schema_errors": None,
@@ -765,7 +767,7 @@ async def extract(
             artifact = {
                 **artifact_base,
                 "timings_ms": timings_ms,
-                "raw": None,
+                "raw": last_raw,
                 "parsed": None,
                 "schema_valid": False,
                 "schema_errors": None,
@@ -802,7 +804,7 @@ async def extract(
             artifact = {
                 **artifact_base,
                 "timings_ms": timings_ms,
-                "raw": None,
+                "raw": last_raw,
                 "parsed": None,
                 "schema_valid": False,
                 "schema_errors": None,

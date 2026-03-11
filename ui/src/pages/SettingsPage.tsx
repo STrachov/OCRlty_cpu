@@ -15,10 +15,10 @@ type TestState = {
 type RuntimeEditorState = Record<RuntimeSettingKey, string>;
 
 const RUNTIME_SETTING_ORDER: RuntimeSettingKey[] = [
-  "VLLM_BASE_URL",
-  "VLLM_API_KEY",
-  "VLLM_MODEL",
   "INFERENCE_BACKEND",
+  "VLLM_BASE_URL",
+  "VLLM_MODEL",
+  "VLLM_API_KEY",
   "DEBUG_MODE",
   "S3_PRESIGN_TTL_S",
 ];

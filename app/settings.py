@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     VLLM_MODEL: str = "Qwen/Qwen3-VL-8B-Instruct"
     VLLM_BASE_URL: str = "http://127.0.0.1:8000"
     VLLM_API_KEY: str = ""
+    VLLM_MAX_TOKENS: int = 1024
+    VLLM_MAX_TOKENS_LIMIT: int = 8192
     
     VLLM_TIMEOUT_S: int = 120
 
