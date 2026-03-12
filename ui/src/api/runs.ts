@@ -1,6 +1,7 @@
 import { fetchJson } from "./client";
 import type {
   BatchArtifact,
+  EvalArtifact,
   ExtractArtifact,
   GroundTruthListResponse,
   GroundTruthView,
@@ -51,6 +52,12 @@ export async function getRun(runId: string): Promise<BatchArtifact> {
 
 export async function getItem(requestId: string): Promise<ExtractArtifact> {
   const { data } = await fetchJson<ExtractArtifact>(`/v1/runs/item/${encodeURIComponent(requestId)}`);
+  return data;
+}
+
+export async function getEvalArtifact(artifactRel: string): Promise<EvalArtifact> {
+  const query = new URLSearchParams({ artifact_rel: artifactRel });
+  const { data } = await fetchJson<EvalArtifact>(`/v1/runs/eval?${query.toString()}`);
   return data;
 }
 

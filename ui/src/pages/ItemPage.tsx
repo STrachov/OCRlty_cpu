@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useParams } from "react-router-dom";
-import { getItem } from "../api/runs";
+import { useParams, useSearchParams } from "react-router-dom";
+import { getEvalArtifact, getItem } from "../api/runs";
 import { fetchJson } from "../api/client";
+import type { EvalArtifact, EvalMismatch, EvalSample } from "../api/types";
 import { Collapsible } from "../components/Collapsible";
 import { CopyButton } from "../components/CopyButton";
 import { ErrorPanel } from "../components/ErrorPanel";
@@ -10,15 +11,52 @@ import { JsonView } from "../components/JsonView";
 import { resolveReceiptImageUrl } from "../utils/resolveReceiptImageUrl";
 import { downloadJson } from "../utils/downloadJson";
 
+function formatValue(value: unknown): string {
+  if (value == null) {
+    return "-";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function evalStatus(sample: EvalSample | null): { label: string; className: string } {
+  if (!sample) {
+    return { label: "Not available", className: "bg-slate-100 text-slate-700" };
+  }
+  if (sample.gt_ok === false) {
+    return { label: "GT missing", className: "bg-amber-100 text-amber-900" };
+  }
+  if (sample.pred_ok === false) {
+    return { label: "Prediction missing", className: "bg-amber-100 text-amber-900" };
+  }
+  if ((sample.mismatches_count ?? 0) > 0) {
+    return { label: "FAIL", className: "bg-rose-100 text-rose-900" };
+  }
+  return { label: "OK", className: "bg-emerald-100 text-emerald-900" };
+}
+
 export function ItemPage() {
   const { request_id } = useParams<{ request_id: string }>();
+  const [searchParams] = useSearchParams();
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
+  const evalArtifactRel = searchParams.get("eval_artifact_rel");
 
   const itemQuery = useQuery({
     queryKey: ["item", request_id],
     queryFn: () => getItem(request_id ?? ""),
     enabled: Boolean(request_id),
+  });
+  const evalQuery = useQuery({
+    queryKey: ["eval", evalArtifactRel],
+    queryFn: () => getEvalArtifact(evalArtifactRel ?? ""),
+    enabled: Boolean(evalArtifactRel),
   });
 
   const artifact = itemQuery.data ?? {};
@@ -29,6 +67,14 @@ export function ItemPage() {
   const schemaErrors = artifact.schema_errors;
   const errorHistory = artifact.error_history;
   const rawIsNull = Object.prototype.hasOwnProperty.call(artifact, "raw") && artifact.raw === null;
+  const evalArtifact = (evalQuery.data ?? null) as EvalArtifact | null;
+  const evalSummary = evalArtifact?.summary ?? null;
+  const evalSample = useMemo(() => {
+    const samples = Array.isArray(evalArtifact?.samples) ? evalArtifact.samples : [];
+    return (samples.find((sample) => sample.request_id === request_id) ?? null) as EvalSample | null;
+  }, [evalArtifact?.samples, request_id]);
+  const evalBadge = evalStatus(evalSample);
+  const mismatches = Array.isArray(evalSample?.mismatches) ? evalSample.mismatches : [];
 
   const seedImage = useMemo(
     () => resolveReceiptImageUrl(artifact as Record<string, unknown>),
@@ -98,6 +144,101 @@ export function ItemPage() {
               </p>
             )}
           </div>
+
+          {evalArtifactRel ? (
+            <div className="rounded-md border border-slate-200 bg-white p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-base font-semibold">Evaluation</h3>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${evalBadge.className}`}>
+                  {evalBadge.label}
+                </span>
+              </div>
+
+              {evalQuery.isLoading ? <p className="mt-3 text-sm text-slate-600">Loading eval artifact...</p> : null}
+              {evalQuery.isError ? <div className="mt-3"><ErrorPanel error={evalQuery.error} /></div> : null}
+
+              {!evalQuery.isLoading && !evalQuery.isError ? (
+                <div className="mt-3 space-y-3 text-sm">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded border border-slate-200 p-3">
+                      <p><span className="font-medium">mismatches_count:</span> {String(evalSample?.mismatches_count ?? "-")}</p>
+                      <p><span className="font-medium">gt_ok:</span> {String(evalSample?.gt_ok ?? "-")}</p>
+                      <p><span className="font-medium">pred_ok:</span> {String(evalSample?.pred_ok ?? "-")}</p>
+                      <p><span className="font-medium">gt_id:</span> {String(evalArtifact?.gt_id ?? "-")}</p>
+                      <p><span className="font-medium">gt_name:</span> {String(evalArtifact?.gt_name ?? "-")}</p>
+                    </div>
+                    <div className="rounded border border-slate-200 p-3">
+                      <p><span className="font-medium">str_mode:</span> {String(evalSummary?.str_mode ?? "-")}</p>
+                      <p><span className="font-medium">decimal_sep:</span> {String(evalSummary?.decimal_sep ?? "-")}</p>
+                      <p><span className="font-medium">batch_artifact_rel:</span> {String(evalArtifact?.batch_artifact_rel ?? "-")}</p>
+                      <p><span className="font-medium">eval_id:</span> {String(evalArtifact?.eval_id ?? "-")}</p>
+                    </div>
+                  </div>
+
+                  {evalSample ? (
+                    mismatches.length > 0 ? (
+                      <div>
+                        <h4 className="mb-2 text-sm font-semibold">Mismatches</h4>
+                        <div className="overflow-x-auto rounded border border-slate-200">
+                          <table className="min-w-full text-sm">
+                            <thead className="bg-slate-100 text-left">
+                              <tr>
+                                <th className="px-3 py-2">path</th>
+                                <th className="px-3 py-2">reason</th>
+                                <th className="px-3 py-2">pred</th>
+                                <th className="px-3 py-2">gt</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {mismatches.map((mismatch, idx) => {
+                                const item = mismatch as EvalMismatch;
+                                return (
+                                  <tr key={`${item.path ?? "path"}-${idx}`} className="border-t border-slate-100 align-top">
+                                    <td className="px-3 py-2 font-mono text-xs">{item.path ?? "-"}</td>
+                                    <td className="px-3 py-2">{item.reason ?? "-"}</td>
+                                    <td className="max-w-[280px] px-3 py-2">
+                                      <p className="break-words">{formatValue(item.pred)}</p>
+                                      {item.pred_canon !== undefined ? (
+                                        <p className="mt-1 text-xs text-slate-500">canon: {formatValue(item.pred_canon)}</p>
+                                      ) : null}
+                                      {item.pred_err ? <p className="mt-1 text-xs text-rose-700">error: {item.pred_err}</p> : null}
+                                    </td>
+                                    <td className="max-w-[280px] px-3 py-2">
+                                      <p className="break-words">{formatValue(item.gt)}</p>
+                                      {item.gt_canon !== undefined ? (
+                                        <p className="mt-1 text-xs text-slate-500">canon: {formatValue(item.gt_canon)}</p>
+                                      ) : null}
+                                      {item.gt_err ? <p className="mt-1 text-xs text-rose-700">error: {item.gt_err}</p> : null}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+                        No mismatches for this item.
+                      </p>
+                    )
+                  ) : (
+                    <p className="rounded border border-dashed border-slate-300 p-3 text-sm text-slate-500">
+                      Current request_id was not found in eval.samples.
+                    </p>
+                  )}
+
+                  <Collapsible title="eval_summary" defaultOpen={false}>
+                    <JsonView data={evalSummary ?? null} />
+                  </Collapsible>
+
+                  <Collapsible title="eval_sample" defaultOpen={false}>
+                    <JsonView data={evalSample ?? null} />
+                  </Collapsible>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {timings ? (
             <div className="rounded-md border border-slate-200 bg-white p-4">

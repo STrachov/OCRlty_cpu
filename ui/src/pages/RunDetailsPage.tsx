@@ -28,6 +28,7 @@ type EvalByRequestItem = {
 type BatchEval = {
   summary?: Record<string, unknown>;
   by_request_id?: Record<string, EvalByRequestItem>;
+  eval_artifact_rel?: string;
 };
 
 function hasEvalFail(ev?: EvalByRequestItem): boolean {
@@ -128,6 +129,14 @@ export function RunDetailsPage() {
   const topOkCount = (artifact.ok_count as number | null | undefined) ?? "-";
   const topErrorCount = (artifact.error_count as number | null | undefined) ?? "-";
   const topArtifactRel = (artifact.artifact_rel as string | null | undefined) ?? "-";
+  const evalArtifactRel = typeof batchEval?.eval_artifact_rel === "string" ? batchEval.eval_artifact_rel : null;
+  const getItemHref = (requestId: string) => {
+    const query = new URLSearchParams();
+    if (evalArtifactRel) {
+      query.set("eval_artifact_rel", evalArtifactRel);
+    }
+    return `/items/${encodeURIComponent(requestId)}${query.toString() ? `?${query.toString()}` : ""}`;
+  };
 
   return (
     <section className="space-y-4">
@@ -212,7 +221,7 @@ export function RunDetailsPage() {
                 const current = filteredItems[focusedIndex];
                 const requestId = typeof current?.request_id === "string" ? current.request_id : "";
                 if (requestId) {
-                  navigate(`/items/${encodeURIComponent(requestId)}`, { state: { runId: run_id } });
+                  navigate(getItemHref(requestId), { state: { runId: run_id } });
                 }
               }
             }}
@@ -244,7 +253,7 @@ export function RunDetailsPage() {
                         {requestId ? (
                           <Link
                             className="text-blue-700 hover:underline"
-                            to={`/items/${encodeURIComponent(requestId)}`}
+                            to={getItemHref(requestId)}
                             state={{ runId: run_id }}
                           >
                             {typeof item.file === "string" ? item.file : "-"}

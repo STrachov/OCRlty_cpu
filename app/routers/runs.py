@@ -16,6 +16,7 @@ from app.services.artifacts import (
     list_batch_artifacts,
     read_artifact_json,
 )
+from app.settings import settings
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 _ERR = common_error_responses(400, 401, 403, 404, 422, 500)

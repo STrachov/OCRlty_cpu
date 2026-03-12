@@ -120,6 +120,47 @@ export type BatchArtifact = Record<string, unknown> & {
 
 export type ExtractArtifact = Record<string, unknown>;
 
+export type EvalMismatch = {
+  path?: string;
+  reason?: string;
+  pred?: unknown;
+  gt?: unknown;
+  pred_canon?: unknown;
+  gt_canon?: unknown;
+  pred_err?: string;
+  gt_err?: string;
+};
+
+export type EvalSample = {
+  image_base?: string;
+  request_id?: string;
+  gt_ok?: boolean;
+  pred_ok?: boolean;
+  mismatches_count?: number;
+  mismatches?: EvalMismatch[];
+};
+
+export type EvalArtifact = Record<string, unknown> & {
+  eval_id?: string;
+  created_at?: string;
+  run_id?: string;
+  gt_id?: string;
+  gt_name?: string | null;
+  batch_artifact_rel?: string;
+  summary?: {
+    items?: number;
+    gt_found?: number;
+    gt_missing?: number;
+    pred_found?: number;
+    pred_missing?: number;
+    str_mode?: string;
+    decimal_sep?: string;
+    [key: string]: unknown;
+  };
+  fields?: Array<Record<string, unknown>>;
+  samples?: EvalSample[];
+};
+
 export type ApiClientError = Error & {
   httpStatus: number;
   code?: string;
