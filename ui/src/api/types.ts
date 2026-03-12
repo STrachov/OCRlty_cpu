@@ -136,6 +136,8 @@ export type EvalSample = {
   request_id?: string;
   gt_ok?: boolean;
   pred_ok?: boolean;
+  pred?: unknown;
+  gt?: unknown;
   mismatches_count?: number;
   mismatches?: EvalMismatch[];
 };

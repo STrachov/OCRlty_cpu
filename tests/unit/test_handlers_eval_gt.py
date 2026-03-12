@@ -11,6 +11,8 @@ def _principal() -> ApiPrincipal:
 
 @pytest.mark.asyncio
 async def test_eval_batch_vs_gt_uses_gt_id(monkeypatch):
+    captured = {}
+
     monkeypatch.setattr(handlers, "find_batch_artifact_path", lambda *_args, **_kwargs: "/tmp/batches/2026-03-06/run1.json")
     monkeypatch.setattr(
         handlers,
@@ -53,7 +55,13 @@ async def test_eval_batch_vs_gt_uses_gt_id(monkeypatch):
             [{"file": "a.jpg", "total_raw": "100"}],
         ),
     )
-    monkeypatch.setattr(handlers, "save_eval_artifact", lambda payload, owner_key_id=None: "/tmp/evals/2026-03-06/e1.json")
+
+    def _save_eval_artifact(payload, owner_key_id=None):
+        captured["payload"] = payload
+        captured["owner_key_id"] = owner_key_id
+        return "/tmp/evals/2026-03-06/e1.json"
+
+    monkeypatch.setattr(handlers, "save_eval_artifact", _save_eval_artifact)
 
     resp = await handlers.eval_batch_vs_gt(
         handlers.EvalBatchVsGTRequest(run_id="run1", gt_id="gt_1"),
@@ -66,3 +74,6 @@ async def test_eval_batch_vs_gt_uses_gt_id(monkeypatch):
     assert resp.summary["gt_found"] == 1
     assert resp.by_request_id is not None
     assert resp.by_request_id["r1"]["mismatches_count"] == 0
+    assert captured["owner_key_id"] == "k1"
+    assert captured["payload"]["samples"][0]["pred"] == {"total_raw": "100"}
+    assert captured["payload"]["samples"][0]["gt"] == {"file": "a.jpg", "total_raw": "100"}

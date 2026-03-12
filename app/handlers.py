@@ -806,6 +806,8 @@ async def eval_batch_vs_gt(
                 "request_id": request_id,
                 "gt_ok": gt_rec is not None,
                 "pred_ok": pred_obj is not _MISSING,
+                "pred": None if pred_obj is _MISSING else pred_obj,
+                "gt": None if gt_payload is _MISSING else gt_payload,
                 "mismatches_count": len(mismatches),
                 "mismatches": mismatches[:50],  # keep inline small; full mismatches in eval artifact
             }
