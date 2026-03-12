@@ -10,12 +10,12 @@ from app.auth_store import ApiPrincipal
 from app.schemas.api_error import common_error_responses
 from app.handlers import _validate_request_id_for_fs
 from app.services.artifacts import (
+    artifact_ref_from_rel,
     find_artifact_path,
     find_batch_artifact_path,
     list_batch_artifacts,
     read_artifact_json,
 )
-from app.settings import settings
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 _ERR = common_error_responses(400, 401, 403, 404, 422, 500)
@@ -58,6 +58,22 @@ def _ensure_owner_or_admin(principal: ApiPrincipal, owner_key_id: Optional[str])
         return
     if not owner_key_id or owner_key_id != principal.key_id:
         raise HTTPException(status_code=403, detail="You may only access your own runs.")
+
+
+def _resolve_eval_owner_key_id(eval_obj: Dict[str, Any]) -> Optional[str]:
+    auth = eval_obj.get("auth") if isinstance(eval_obj.get("auth"), dict) else {}
+    owner_key_id = auth.get("key_id") if isinstance(auth, dict) else None
+    if owner_key_id:
+        return str(owner_key_id)
+
+    batch_artifact_rel = eval_obj.get("batch_artifact_rel")
+    if not isinstance(batch_artifact_rel, str) or not batch_artifact_rel:
+        return None
+
+    batch_obj = read_artifact_json(artifact_ref_from_rel(batch_artifact_rel))
+    batch_auth = batch_obj.get("auth") if isinstance(batch_obj.get("auth"), dict) else {}
+    batch_owner_key_id = batch_auth.get("key_id") if isinstance(batch_auth, dict) else None
+    return str(batch_owner_key_id) if batch_owner_key_id else None
 
 
 @router.get(
@@ -110,6 +126,28 @@ async def list_runs(
 
     next_cursor = _encode_cursor(next_cur[0], next_cur[1]) if next_cur else None
     return RunsListResponse(items=items, limit=limit, next_cursor=next_cursor)
+
+
+@router.get(
+    "/eval",
+    response_model=Dict[str, Any],
+    responses=_ERR,
+)
+async def get_eval_artifact(
+    artifact_rel: str = Query(..., description="Relative eval artifact path, e.g. evals/YYYY-MM-DD/<eval_id>.json"),
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+) -> Dict[str, Any]:
+    rel_norm = str(artifact_rel or "").replace("\\", "/").lstrip("/")
+    if not rel_norm.startswith("evals/"):
+        raise HTTPException(status_code=400, detail="Invalid artifact_rel.")
+
+    obj = read_artifact_json(artifact_ref_from_rel(rel_norm))
+    if not isinstance(obj, dict):
+        raise HTTPException(status_code=500, detail="Invalid eval JSON.")
+
+    owner_key_id = _resolve_eval_owner_key_id(obj)
+    _ensure_owner_or_admin(principal, owner_key_id)
+    return obj
 
 
 @router.get(

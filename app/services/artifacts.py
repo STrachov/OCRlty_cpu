@@ -136,6 +136,15 @@ def to_artifact_rel(ref: Union[str, Path]) -> str:
         return str(ref)
 
 
+def artifact_ref_from_rel(rel: str) -> Union[str, Path]:
+    rel_norm = str(rel or "").replace("\\", "/").lstrip("/")
+    if not rel_norm or "/../" in f"/{rel_norm}/":
+        raise HTTPException(status_code=400, detail="Invalid artifact_rel.")
+    if s3_enabled():
+        return s3_key(rel_norm)
+    return (ARTIFACTS_DIR / rel_norm).resolve()
+
+
 def artifact_date_from_path(ref: Union[str, Path]) -> Optional[str]:
     s = str(ref)
     m = re.search(r"/(extracts|batches|evals)/(\d{4}-\d{2}-\d{2})/", s)

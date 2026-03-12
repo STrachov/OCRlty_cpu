@@ -57,3 +57,49 @@ async def test_get_run_forbidden_for_non_owner(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await runs.get_run("run1", principal=_principal(role="client", key_id="other"))
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_eval_artifact_reads_eval_by_rel_and_allows_owner(monkeypatch):
+    def _read_artifact_json(ref):
+        ref_str = str(ref).replace("\\", "/")
+        if ref_str.endswith("evals/2026-03-12/e1.json"):
+            return {
+                "eval_id": "e1",
+                "batch_artifact_rel": "batches/2026-03-12/run1.json",
+                "samples": [{"request_id": "r1"}],
+            }
+        if ref_str.endswith("batches/2026-03-12/run1.json"):
+            return {"auth": {"key_id": "k1"}}
+        raise AssertionError(f"unexpected ref: {ref}")
+
+    monkeypatch.setattr(runs, "read_artifact_json", _read_artifact_json)
+
+    resp = await runs.get_eval_artifact(
+        artifact_rel="evals/2026-03-12/e1.json",
+        principal=_principal(role="client", key_id="k1"),
+    )
+    assert resp["eval_id"] == "e1"
+
+
+@pytest.mark.asyncio
+async def test_get_eval_artifact_forbidden_for_non_owner(monkeypatch):
+    def _read_artifact_json(ref):
+        ref_str = str(ref).replace("\\", "/")
+        if ref_str.endswith("evals/2026-03-12/e1.json"):
+            return {
+                "eval_id": "e1",
+                "batch_artifact_rel": "batches/2026-03-12/run1.json",
+            }
+        if ref_str.endswith("batches/2026-03-12/run1.json"):
+            return {"auth": {"key_id": "owner-1"}}
+        raise AssertionError(f"unexpected ref: {ref}")
+
+    monkeypatch.setattr(runs, "read_artifact_json", _read_artifact_json)
+
+    with pytest.raises(HTTPException) as exc:
+        await runs.get_eval_artifact(
+            artifact_rel="evals/2026-03-12/e1.json",
+            principal=_principal(role="client", key_id="other"),
+        )
+    assert exc.value.status_code == 403
