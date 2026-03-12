@@ -1007,19 +1007,27 @@ async def _run_batch_extract_core(
             try:
                 preprocess_ms = 0
                 t_pre0 = time.monotonic()
+                mime = inp.mime_type or _guess_mime_type(inp.file)
 
-                if inp.bytes is None and inp.input_ref:
-                    img_bytes = await asyncio.to_thread(_load_input_bytes_by_rel, inp.input_ref)
-                    b64 = base64.b64encode(img_bytes).decode("ascii")
-                    mime = inp.mime_type or "application/octet-stream"
+                if inp.input_ref:
+                    sub_req = ExtractRequest(
+                        task_id=task_id,
+                        request_id=request_id,
+                        image_ref=inp.input_ref,
+                        mime_type=mime,
+                    )
                 else:
                     img_bytes = inp.bytes or b""
                     b64 = base64.b64encode(img_bytes).decode("ascii")
-                    mime = inp.mime_type or _guess_mime_type(inp.file)
+                    sub_req = ExtractRequest(
+                        task_id=task_id,
+                        request_id=request_id,
+                        image_base64=b64,
+                        mime_type=mime,
+                    )
 
                 preprocess_ms = int(round((time.monotonic() - t_pre0) * 1000))
 
-                sub_req = ExtractRequest(task_id=task_id, request_id=request_id, image_base64=b64, mime_type=mime)
                 resp = await extract(sub_req, principal=principal, vllm_client=vllm_client)
                 item_timings: Dict[str, int] = dict(getattr(resp, "timings_ms", None) or {})
                 item_timings["preprocess"] = int(preprocess_ms)

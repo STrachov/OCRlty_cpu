@@ -199,3 +199,53 @@ async def test_extract_persists_last_raw_on_non_json_failure(monkeypatch):
     assert captured["owner_key_id"] == "admin-k1"
     assert captured["payload"]["raw"] == '{\n  "ok": true,\n}\ninvalid'
     assert captured["payload"]["error"]["detail"]["status"] == 502
+
+
+@pytest.mark.asyncio
+async def test_run_batch_extract_core_prefers_input_ref_for_extract(monkeypatch, principal):
+    captured = {}
+
+    async def _fake_extract(req, *, principal, vllm_client):
+        captured["req"] = req
+        return extract_service.ExtractResponse(
+            request_id=req.request_id or "req-1",
+            created_at="2026-03-11T10:00:00Z",
+            task_id=req.task_id,
+            artifact_rel="extracts/2026-03-11/req-1.json",
+            model_id="model-x",
+            prompt_sha256="p",
+            schema_sha256="s",
+            timings_ms={"total": 1},
+            raw=None,
+            parsed={"ok": True},
+            schema_valid=True,
+            schema_errors=None,
+            error=None,
+            error_history=None,
+            meta={},
+        )
+
+    monkeypatch.setattr(extract_service, "extract", _fake_extract)
+    monkeypatch.setattr(extract_service, "save_batch_artifact", lambda run_id, payload, owner_key_id=None: "batch-ref")
+    monkeypatch.setattr(extract_service, "_now_utc_s", lambda: "2026-03-11T10:00:00Z")
+
+    resp = await extract_service._run_batch_extract_core(
+        task_id="receipt_fields_v1",
+        run_id="run-1",
+        inputs=[
+            extract_service._BatchInput(
+                file="receipt.jpg",
+                bytes=b"fake-image",
+                mime_type="image/jpeg",
+                input_ref="inputs/1/receipt.jpg",
+            )
+        ],
+        concurrency=1,
+        principal=principal,
+        vllm_client=AsyncMock(),
+    )
+
+    req = captured["req"]
+    assert req.image_ref == "inputs/1/receipt.jpg"
+    assert req.image_base64 is None
+    assert resp.items[0].input_ref == "inputs/1/receipt.jpg"
