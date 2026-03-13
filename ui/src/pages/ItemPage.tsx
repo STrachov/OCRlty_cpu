@@ -73,6 +73,7 @@ export function ItemPage() {
   const { request_id } = useParams<{ request_id: string }>();
   const [searchParams] = useSearchParams();
   const evalArtifactRel = searchParams.get("eval_artifact_rel");
+  const originalFileName = searchParams.get("file_name");
 
   const itemQuery = useQuery({
     queryKey: ["item", request_id],
@@ -140,7 +141,13 @@ export function ItemPage() {
       {!itemQuery.isError && !itemQuery.isLoading ? (
         <>
           <div className="rounded-md border border-slate-200 bg-white p-4 text-sm">
+            {originalFileName ? (
             <div className="flex items-center gap-2">
+              <span className="font-medium">original file name:</span>
+              <span className="font-mono text-xs">{originalFileName}</span>
+            </div>
+            ) : null}
+            <div className="flex items-center gap-2">  
               <span className="font-medium">request_id:</span>
               <span className="font-mono text-xs">{displayRequestId}</span>
               {displayRequestId ? <CopyButton text={displayRequestId} /> : null}
