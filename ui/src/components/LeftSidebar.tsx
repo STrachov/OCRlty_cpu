@@ -10,7 +10,7 @@ export function LeftSidebar() {
   const idleItem = "text-slate-700 hover:bg-slate-100";
 
   return (
-    <aside className="w-[260px] shrink-0 border-r border-slate-200 bg-white p-4">
+    <aside className="w-[260px] shrink-0 overflow-y-auto border-r border-slate-200 bg-white p-4">
       <nav>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Navigation</p>
         <div className="space-y-1">

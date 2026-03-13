@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { CopyButton } from "./CopyButton";
@@ -6,10 +6,97 @@ import { ErrorPanel } from "./ErrorPanel";
 import { ItemInspector } from "./ItemInspector";
 import { downloadJson } from "../utils/downloadJson";
 import { useLayoutContext } from "../layout/LayoutContext";
+import { fetchJson } from "../api/client";
+import { resolveReceiptImageUrl } from "../utils/resolveReceiptImageUrl";
 
 type RightPanelProps = {
   onRefreshRuns?: () => void;
 };
+
+function ItemImagePreview({ itemData }: { itemData: Record<string, unknown> | null }) {
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
+  const [imgFailed, setImgFailed] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+
+  const seedImage = useMemo(() => resolveReceiptImageUrl(itemData), [itemData]);
+
+  useEffect(() => {
+    setImgSrc(null);
+    setImgFailed(false);
+    if (!seedImage) {
+      return;
+    }
+    if (!seedImage.includes("/v1/inputs/presign?")) {
+      setImgSrc(seedImage);
+      return;
+    }
+
+    let path = "";
+    try {
+      const u = new URL(seedImage);
+      path = `${u.pathname}${u.search}`;
+    } catch {
+      setImgFailed(true);
+      return;
+    }
+
+    void fetchJson<{ url: string }>(path)
+      .then((res) => {
+        if (res.data?.url) {
+          setImgSrc(res.data.url);
+        } else {
+          setImgFailed(true);
+        }
+      })
+      .catch(() => {
+        setImgFailed(true);
+      });
+  }, [seedImage]);
+
+  return (
+    <>
+      <div className="rounded border border-slate-200 p-3 text-sm">
+        <p className="mb-2 font-medium">Receipt image</p>
+        {imgSrc && !imgFailed ? (
+          <button
+            type="button"
+            onClick={() => setViewerOpen(true)}
+            className="block w-full rounded border border-slate-200 p-1 hover:border-slate-300"
+          >
+            <img
+              src={imgSrc}
+              alt="Receipt preview"
+              className="max-h-[300px] w-full rounded object-contain"
+              onError={() => setImgFailed(true)}
+            />
+          </button>
+        ) : (
+          <p className="rounded border border-dashed border-slate-300 p-3 text-xs text-slate-500">
+            Receipt image not available
+          </p>
+        )}
+      </div>
+
+      {viewerOpen && imgSrc ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-6" onClick={() => setViewerOpen(false)}>
+          <button
+            type="button"
+            onClick={() => setViewerOpen(false)}
+            className="absolute right-6 top-6 rounded bg-white/90 px-3 py-2 text-sm font-medium text-slate-900 hover:bg-white"
+          >
+            Close
+          </button>
+          <img
+            src={imgSrc}
+            alt="Receipt full size"
+            className="max-h-full max-w-full rounded bg-white p-2 object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 export function RightPanel({ onRefreshRuns }: RightPanelProps) {
   const location = useLocation();
@@ -33,7 +120,7 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
 
   if (location.pathname === "/runs") {
     return (
-      <aside className="w-[360px] shrink-0 border-l border-slate-200 bg-white p-4">
+      <aside className="w-[360px] shrink-0 overflow-y-auto border-l border-slate-200 bg-white p-4">
         <div className="rounded border border-slate-200 p-3 text-sm">
           <p className="font-medium">Sorted: newest first</p>
           <button
@@ -45,7 +132,7 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
           </button>
         </div>
       </aside>
-    );
+      );
   }
 
   if (location.pathname === "/runs/new") {
@@ -168,20 +255,23 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
   if (location.pathname.startsWith("/items/") && request_id) {
     const displayId = typeof itemData?.request_id === "string" ? itemData.request_id : request_id;
     return (
-      <aside className="w-[360px] shrink-0 border-l border-slate-200 bg-white p-4">
-        <div className="rounded border border-slate-200 p-3 text-sm">
-          <p className="mb-2 font-medium">Item Context</p>
-          <div className="mb-3 flex items-center gap-2">
-            <span className="font-mono text-xs">{displayId}</span>
-            <CopyButton text={displayId} />
+      <aside className="w-[360px] shrink-0 overflow-y-auto border-l border-slate-200 bg-white p-4">
+        <div className="space-y-4">
+          <ItemImagePreview itemData={itemData} />
+          <div className="rounded border border-slate-200 p-3 text-sm">
+            <p className="mb-2 font-medium">Item Context</p>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="font-mono text-xs">{displayId}</span>
+              <CopyButton text={displayId} />
+            </div>
+            <button
+              type="button"
+              onClick={() => downloadJson(`item-${displayId}.json`, itemData ?? {})}
+              className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100"
+            >
+              Download JSON
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => downloadJson(`item-${displayId}.json`, itemData ?? {})}
-            className="rounded border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100"
-          >
-            Download JSON
-          </button>
         </div>
       </aside>
     );

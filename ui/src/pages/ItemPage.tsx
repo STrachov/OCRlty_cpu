@@ -2,13 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router-dom";
 import { getEvalArtifact, getItem } from "../api/runs";
-import { fetchJson } from "../api/client";
 import type { EvalArtifact, EvalMismatch, EvalSample } from "../api/types";
 import { Collapsible } from "../components/Collapsible";
 import { CopyButton } from "../components/CopyButton";
 import { ErrorPanel } from "../components/ErrorPanel";
 import { JsonView } from "../components/JsonView";
-import { resolveReceiptImageUrl } from "../utils/resolveReceiptImageUrl";
 import { downloadJson } from "../utils/downloadJson";
 
 type FlatValueRow = {
@@ -74,8 +72,6 @@ function evalStatus(sample: EvalSample | null): { label: string; className: stri
 export function ItemPage() {
   const { request_id } = useParams<{ request_id: string }>();
   const [searchParams] = useSearchParams();
-  const [imgSrc, setImgSrc] = useState<string | null>(null);
-  const [imgFailed, setImgFailed] = useState(false);
   const evalArtifactRel = searchParams.get("eval_artifact_rel");
 
   const itemQuery = useQuery({
@@ -134,35 +130,6 @@ export function ItemPage() {
     });
   }, [evalSample, mismatches]);
 
-  const seedImage = useMemo(
-    () => resolveReceiptImageUrl(artifact as Record<string, unknown>),
-    [artifact]
-  );
-
-  useEffect(() => {
-    setImgSrc(null);
-    setImgFailed(false);
-    if (!seedImage) {
-      return;
-    }
-    if (!seedImage.includes("/v1/inputs/presign?")) {
-      setImgSrc(seedImage);
-      return;
-    }
-    const u = new URL(seedImage);
-    void fetchJson<{ url: string }>(`${u.pathname}${u.search}`)
-      .then((res) => {
-        if (res.data?.url) {
-          setImgSrc(res.data.url);
-        } else {
-          setImgFailed(true);
-        }
-      })
-      .catch(() => {
-        setImgFailed(true);
-      });
-  }, [seedImage]);
-
   return (
     <section className="space-y-4">
       <h2 className="text-xl font-semibold">Item Details</h2>
@@ -185,22 +152,6 @@ export function ItemPage() {
                 Download JSON
               </button>
             </div>
-          </div>
-
-          <div className="rounded-md border border-slate-200 bg-white p-4">
-            <h3 className="mb-2 text-base font-semibold">Receipt Image</h3>
-            {imgSrc && !imgFailed ? (
-              <img
-                src={imgSrc}
-                alt="Receipt"
-                className="max-h-[420px] w-full rounded border border-slate-200 object-contain"
-                onError={() => setImgFailed(true)}
-              />
-            ) : (
-              <p className="rounded border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-                Receipt image not available
-              </p>
-            )}
           </div>
 
           {evalArtifactRel ? (

@@ -29,9 +29,9 @@ export function AppLayout() {
         setCreateRunPanelState,
       }}
     >
-      <div className="flex min-h-screen bg-slate-50 text-slate-900">
+      <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
         <LeftSidebar />
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TopBar />
           <main className="min-h-0 flex-1 overflow-auto p-6">
             <Outlet context={{ setRunsRefresh }} />
