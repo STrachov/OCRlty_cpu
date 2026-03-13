@@ -103,7 +103,7 @@ export function RunsPage() {
                 <th className="px-3 py-2">item_count</th>
                 <th className="px-3 py-2">ok_count</th>
                 <th className="px-3 py-2">error_count</th>
-                <th className="px-3 py-2">eval</th>
+                <th className="px-3 py-2">mismatched</th>
 
               </tr>
             </thead>
@@ -132,7 +132,7 @@ export function RunsPage() {
                   <td className="px-3 py-2">{String(row.item_count ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.ok_count ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.error_count ?? "-")}</td>
-                  <td className="px-3 py-2">{row.eval_summary ? "yes" : "no"}</td>
+                  <td className="px-3 py-2">{String(row.eval_summary?.mismatched ?? "n/a")}</td>
                 </tr>
               ))}
               {rows.length === 0 && !runsQuery.isLoading ? (

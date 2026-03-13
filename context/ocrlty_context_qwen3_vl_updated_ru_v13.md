@@ -18,6 +18,24 @@
 - CPU часть обновляется независимо,
 - артефакты больше не зависят от локального диска/volume конкретного pod.
 
+### 0.1 Актуальное состояние проекта (обновлено под текущее состояние репозитория)
+- В проекте уже есть рабочий UI на `Vite + React + TypeScript` (`./ui/`), а не только минимальный план на будущее.
+- `Runs` page:
+  - использует `GET /v1/runs?limit&cursor`;
+  - умеет показывать `eval_summary` в правой панели для выделенного/сфокусированного run без дополнительных запросов;
+  - список хранится на фронте в `React Query`, а текущий выбранный run preview — в layout state/context.
+- `Run Details` page:
+  - показывает `items[]`, фильтры, keyboard navigation (`↑/↓`, `Enter`);
+  - отображает batch-level `eval.summary`, если evaluation был выполнен.
+- `Item Details` page:
+  - читает extract artifact через `GET /v1/runs/item/{request_id}`;
+  - если из `Run Details` передан `eval_artifact_rel`, догружает полный eval artifact через `GET /v1/runs/eval?artifact_rel=...`;
+  - показывает item-level evaluation, comparison table по `pred` vs `gt`, а также `eval_summary` и `eval_sample`;
+  - имя исходного файла (`file_name`) и `eval_artifact_rel` передаются из `Run Details` через query string;
+  - изображение item показывается в правом сайдбаре, открывается в увеличенном viewer по клику.
+- Для batch evaluation в полном eval artifact теперь сохраняются `samples[].pred` и `samples[].gt`, чтобы UI мог строить полную таблицу сравнения, а не только список mismatches.
+- Для списка runs backend уже возвращает `eval_summary` в `RunSummary`, поэтому правой панели на `/runs` не требуется читать полный run artifact.
+
 ---
 
 ## 1) Высокоуровневая архитектура (два сервиса + объектное хранилище)
@@ -73,6 +91,7 @@ RunPod proxy URL имеет вид:
 - `VLLM_BASE_URL` — например `https://<POD_ID>-8000.proxy.runpod.net/v1`
 - `VLLM_API_KEY` — ключ для доступа к vLLM
 - `VLLM_MODEL` — `Qwen/Qwen3-VL-8B-Instruct`
+- `VLLM_MAX_MODEL_LEN` — лимит контекста upstream модели, используется и для retry/resize policy при context overflow.
 
 **vLLM HTTP (keep-alive) и таймауты (Orchestrator → vLLM)**
 - `VLLM_HTTP_MAX_CONNECTIONS` — общий лимит соединений httpx (например 50–200)
@@ -82,6 +101,8 @@ RunPod proxy URL имеет вид:
 - `VLLM_READ_TIMEOUT_S` — read timeout (самый важный для долгих ответов модели)
 - `VLLM_WRITE_TIMEOUT_S` — write timeout
 - `VLLM_POOL_TIMEOUT_S` — pool timeout
+- `VLLM_CONTEXT_RESPONSE_RESERVE_TOKENS` — резерв токенов под ответ модели при adaptive retry после context-too-long.
+- `VLLM_CONTEXT_SAFETY_MARGIN_TOKENS` — дополнительный safety margin для retry/resize policy.
 
 **Jobs (async / 202 + polling)**
 - `JOBS_BACKEND` — `local` (in-process) или `celery`
@@ -116,6 +137,7 @@ RunPod proxy URL имеет вид:
 - `API_KEY_PEPPER=...` (секрет для HMAC хэша)
 
 > В коде настройки читаются через `settings` (Pydantic Settings). Это важно: `.env` подхватывается settings, но не обязан попадать в `os.getenv()`.
+> Для runtime settings через UI/Admin: если сохранить пустую строку, DB override удаляется и эффективное значение снова берётся из `settings` / env.
 
 ### 3.2 vLLM (GPU pod) — env
 - `VLLM_MODEL=Qwen/Qwen3-VL-8B-Instruct`
@@ -186,8 +208,24 @@ Orchestrator выполняет:
 - `timings_ms` сохраняются:
   - в extract‑артефакте: минимальный формат `{total, vllm, parse_validate}` (мс);
   - в batch‑артефакте: на уровне `items[]` (добавляется `preprocess`, а `total` = extract_total + preprocess), плюс на верхнем уровне batch есть `timings_ms: {total}` для wall‑time всего прогона.
-- Сейчас `input` в extract‑артефакте не содержит base64 вообще: при наличии base64 в запросе в артефакт пишем только image_base64_len, а для воспроизводимости используем image_ref/input_ref (в batch всегда есть input_ref; в sync image_ref появляется только если input был сохранён как ref).
+- Сейчас `input` в extract‑артефакте не содержит base64 вообще: при наличии base64 в запросе в артефакт пишем только `image_base64_len`, а для воспроизводимости используем `image_ref` / `input_ref`.
+- Важно: batch pipeline теперь сохраняет ссылку на исходный input в extract artifact как `input.image_ref`/`image_ref`, поэтому `Item Details` может восстановить изображение без клиентских костылей и без чтения batch artifact только ради image lookup.
 - По умолчанию включена защита от перезаписи (если `S3_ALLOW_OVERWRITE=0`).
+- Добавлен endpoint `GET /v1/runs/eval?artifact_rel=...` для чтения полного eval artifact по `artifact_rel` с теми же auth-ограничениями owner-or-admin, что и у run artifacts.
+
+### 6.4 Evaluation artifacts и канонизация
+- Batch evaluation пишет:
+  - тонкий inline-блок `eval` в batch artifact (`summary`, `by_request_id`, `eval_artifact_rel`);
+  - полный eval artifact в `evals/YYYY-MM-DD/<eval_id>.json`.
+- Полный eval artifact содержит:
+  - `summary`;
+  - `fields`;
+  - `samples[]`, где для каждого item теперь сохраняются `request_id`, `gt_ok`, `pred_ok`, `mismatches_count`, `mismatches`, а также полные `pred` и `gt`.
+- Канонизация money/count была ужесточена:
+  - больше нет перевода money в `minor units` через `*100`;
+  - сравнение строится на нормализованной строковой numeric form;
+  - `decimal_sep` используется как policy, а не игнорируется;
+  - неоднозначные/невалидные форматы дают `canon_error`, а не молчаливое «угадывание».
 
 ---
 
@@ -581,19 +619,97 @@ echo "job_id=$job_id"
 
 ## 12) TODO 
 
-### P0 — Минимальный UI (v0)
-1) **Минимально достаточный UI (v0)**
-- Цель: просматривать результаты прогонов без ручного чтения артефактов.
-- Аутентификация: ввод API key вручную (временное решение; хранение в localStorage).
-- Экраны/функции:
-  - **Runs list**: `GET /v1/runs?limit&cursor` (пагинация), колонки: `created_at`, `run_id`, `task_id`, `item_count`, `ok_count`, `error_count`.
-  - **Run details**: `GET /v1/runs/{run_id}` — таблица `items[]` с колонками: `file`, `schema_valid`, `error`, `request_id`.
-  - **Item details (drill‑down)**: `GET /v1/runs/item/{request_id}` — показать полный extract‑артефакт.
-  - (опционально) client-side фильтры: `schema_valid=false` / `error!=null`, поиск по `file`.
-- UX‑минимум:
-  - копирование `request_id`/`run_id`,
-  - компактный просмотр `schema_errors` и `error_history`,
-  - отображение `timings_ms` по item.
+> Ниже остаётся backlog/roadmap. Часть прежнего пункта про “минимальный UI” уже реализована и не должна читаться как описание отсутствующей функциональности.
+
+### P0 — Обогащение eval artifacts метриками качества для анализа прогонов
+1) **Добавить в eval artifact данные для сравнения двух run и построения графиков**
+- Цель: не просто видеть `mismatches_count`, а понимать, почему один прогон лучше другого и какие изменения реально улучшают качество.
+- Нужны метрики на трёх уровнях: `run-level`, `field-level`, `sample-level`.
+
+- **Run-level quality summary**:
+  - `exact_match_rate` — доля samples без единого mismatch;
+  - `partial_match_rate` — доля samples, где prediction есть, GT есть, но есть расхождения;
+  - `avg_mismatches_per_item`;
+  - `median_mismatches_per_item`;
+  - `items_with_gt_rate`;
+  - `items_with_pred_rate`;
+  - `schema_valid_rate`;
+  - `canon_error_rate`;
+  - `error_rate` по items batch artifact;
+  - распределение причин mismatch: `mismatch`, `pred_missing`, `gt_missing`, `canon_error`, `pred_type_mismatch`, `gt_type_mismatch`.
+
+- **Field-level quality summary**:
+  - по каждому path хранить:
+    - `support` — в скольких samples поле вообще участвовало в сравнении;
+    - `matched`;
+    - `mismatch`;
+    - `pred_missing`;
+    - `gt_missing`;
+    - `canon_error`;
+    - `accuracy`;
+    - `precision_like` и `recall_like` для полей, где важны пропуски;
+    - `top_failure_reasons` — агрегированная статистика причин по конкретному полю.
+  - это позволит строить heatmap по полям и видеть, какие поля деградируют между двумя run.
+
+- **Sample-level quality summary**:
+  - кроме `mismatches_count` хранить:
+    - `matched_fields_count`;
+    - `compared_fields_count`;
+    - `sample_accuracy`;
+    - `failure_reasons[]` без дубликатов;
+    - `schema_valid`;
+    - `extract_error_code`, если extraction завершился ошибкой;
+    - `timings_ms.total`, `timings_ms.vllm`, `timings_ms.parse_validate`;
+    - признаки input quality, если доступны: `image_width`, `image_height`, `resize_scale`, `ocr_like_density` или другой легковесный indicator сложности.
+  - это даст scatter plot вида “качество vs latency”, “качество vs размер/resize”, “качество vs тип ошибки”.
+
+- **Сравнимость между прогонами**:
+  - в eval artifact полезно добавлять стабильные metadata для сравнения:
+    - `task_id`;
+    - `run_id`;
+    - `gt_id`;
+    - `gt_name`;
+    - `model_name`;
+    - `inference_backend`;
+    - `prompt_version` или `task_schema_version`;
+    - ключевые runtime settings, влияющие на качество: `str_mode`, `decimal_sep`, `max_tokens`, `max_model_len`, `resize_policy`.
+  - это позволит честно сравнивать run только в сопоставимом контексте.
+
+- **Данные для графиков и аналитики**:
+  - timeseries-ready summary:
+    - `created_at`;
+    - `exact_match_rate`;
+    - `avg_mismatches_per_item`;
+    - `schema_valid_rate`;
+    - `canon_error_rate`;
+    - `error_rate`;
+    - `latency_p50`, `latency_p95`;
+  - top regressions / improvements:
+    - список полей с наибольшим падением/ростом accuracy относительно baseline;
+    - список samples, у которых mismatch count сильнее всего изменился;
+  - histogram-ready buckets:
+    - распределение `mismatches_count` по samples;
+    - распределение latency;
+    - распределение resize scale;
+    - распределение причин ошибок.
+
+- **Отдельно стоит добавить summary для extraction reliability**:
+  - `succeeded_count`;
+  - `failed_count`;
+  - `failed_by_error_code`;
+  - `retry_rate`;
+  - `avg_attempts`;
+  - `resized_retry_rate`;
+  - `context_overflow_rate`.
+  - это важно, потому что улучшение качества распознавания нельзя анализировать отдельно от деградации стабильности пайплайна.
+
+- **Практический результат**:
+  - можно будет сравнивать два run не только по “сколько mismatch-ей”, но и по:
+    - каким именно полям стало лучше/хуже;
+    - выросла ли точность цен/налогов/дат;
+    - где модель стала чаще пропускать значения;
+    - ухудшилась ли стабильность или latency;
+    - связаны ли проблемы с resize, canon_error, schema validation или upstream inference failures.
 
 ---
 
@@ -722,4 +838,3 @@ echo "job_id=$job_id"
 
 
 ---
-

@@ -57,6 +57,7 @@ export type EvalSummary = {
   pred_missing?: number;
   str_mode?: string;
   decimal_sep?: string;
+  mismatched?: number;
   [key: string]: unknown;
 };
 

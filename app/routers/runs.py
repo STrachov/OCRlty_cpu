@@ -29,6 +29,7 @@ class EvalSummary(BaseModel):
     pred_missing:Optional[int] = None
     str_mode:Optional[str] = None
     decimal_sep:Optional[str] = None
+    mismatched:Optional[int] = None
 
 class RunSummary(BaseModel):
     run_id: str
@@ -124,6 +125,14 @@ async def list_runs(
             continue
         eval_obj = obj.get("eval")
         summary = eval_obj.get("summary") if isinstance(eval_obj, dict) else None
+        by_request_id = eval_obj.get("by_request_id") if isinstance(eval_obj, dict) else None
+        mismatched = None
+        if isinstance(by_request_id, dict):
+            mismatched = sum(
+                1
+                for row in by_request_id.values()
+                if isinstance(row, dict) and int(row.get("mismatches_count", 0) or 0) > 0
+            )
         items.append(
             RunSummary(
                 run_id=run_id,
@@ -133,10 +142,12 @@ async def list_runs(
                 ok_count=obj.get("ok_count"),
                 error_count=obj.get("error_count"),
                 artifact_rel=rel_ref or None,
-                eval_summary=summary
+                eval_summary=EvalSummary(
+                    **summary,
+                    mismatched=mismatched,
+                ) if isinstance(summary, dict) else None
             )
         )
-
     next_cursor = _encode_cursor(next_cur[0], next_cur[1]) if next_cur else None
     return RunsListResponse(items=items, limit=limit, next_cursor=next_cursor)
 

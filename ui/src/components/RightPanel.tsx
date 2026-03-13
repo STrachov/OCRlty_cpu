@@ -161,6 +161,8 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
                 <p><span className="font-medium">gt_missing:</span> {String(evalSummary.gt_missing ?? "-")}</p>
                 <p><span className="font-medium">pred_found:</span> {String(evalSummary.pred_found ?? "-")}</p>
                 <p><span className="font-medium">pred_missing:</span> {String(evalSummary.pred_missing ?? "-")}</p>
+                <p><span className="font-medium">mismatched:</span> {String(evalSummary.mismatched ?? "-")}</p>
+              
                 <p><span className="font-medium">str_mode:</span> {String(evalSummary.str_mode ?? "-")}</p>
                 <p><span className="font-medium">decimal_sep:</span> {String(evalSummary.decimal_sep ?? "-")}</p>
               </>
