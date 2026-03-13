@@ -1,9 +1,10 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useOutletContext } from "react-router-dom";
 import { listRuns } from "../api/runs";
 import { CopyButton } from "../components/CopyButton";
 import { ErrorPanel } from "../components/ErrorPanel";
+import { useLayoutContext } from "../layout/LayoutContext";
 
 type RunsOutletContext = {
   setRunsRefresh: (fn: (() => void) | undefined) => void;
@@ -20,6 +21,8 @@ function parseCreatedAt(v: unknown): number {
 export function RunsPage() {
   const queryClient = useQueryClient();
   const { setRunsRefresh } = useOutletContext<RunsOutletContext>();
+  const { setRunsListState } = useLayoutContext();
+  const [focusedIndex, setFocusedIndex] = useState(0);
 
   const runsQuery = useInfiniteQuery({
     queryKey: ["runs", 50],
@@ -41,18 +44,30 @@ export function RunsPage() {
   }, [runsQuery.data]);
 
   useEffect(() => {
+    if (focusedIndex >= rows.length) {
+      setFocusedIndex(Math.max(rows.length - 1, 0));
+    }
+  }, [focusedIndex, rows.length]);
+
+  useEffect(() => {
+    setRunsListState({ focusedRunSummary: rows[focusedIndex] ?? null });
+  }, [focusedIndex, rows, setRunsListState]);
+
+  useEffect(() => {
     setRunsRefresh(() => () => {
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
     });
-    return () => setRunsRefresh(undefined);
-  }, [queryClient, setRunsRefresh]);
+    return () => {
+      setRunsRefresh(undefined);
+      setRunsListState({ focusedRunSummary: null });
+    };
+  }, [queryClient, setRunsListState, setRunsRefresh]);
 
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold">Runs</h2>
-          <p className="text-sm text-slate-600">Recent batch runs from `/v1/runs`.</p>
         </div>
         <Link
           to="/runs/new"
@@ -66,7 +81,19 @@ export function RunsPage() {
       {runsQuery.isError ? <ErrorPanel error={runsQuery.error} /> : null}
 
       {!runsQuery.isError ? (
-        <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
+        <div
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setFocusedIndex((v) => Math.min(v + 1, Math.max(0, rows.length - 1)));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setFocusedIndex((v) => Math.max(v - 1, 0));
+            }
+          }}
+          className="overflow-x-auto rounded-md border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-300"
+        >
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-left">
               <tr>
@@ -76,11 +103,18 @@ export function RunsPage() {
                 <th className="px-3 py-2">item_count</th>
                 <th className="px-3 py-2">ok_count</th>
                 <th className="px-3 py-2">error_count</th>
+                <th className="px-3 py-2">eval</th>
+
               </tr>
             </thead>
             <tbody>
               {rows.map((row, idx) => (
-                <tr key={`${row.run_id ?? "run"}-${idx}`} className="border-t border-slate-100">
+                <tr
+                  key={`${row.run_id ?? "run"}-${idx}`}
+                  className={`border-t border-slate-100 ${idx === focusedIndex ? "bg-slate-100" : ""}`}
+                  onClick={() => setFocusedIndex(idx)}
+                  onMouseEnter={() => setFocusedIndex(idx)}
+                >
                   <td className="px-3 py-2">{String(row.created_at ?? "-")}</td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
@@ -98,11 +132,12 @@ export function RunsPage() {
                   <td className="px-3 py-2">{String(row.item_count ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.ok_count ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.error_count ?? "-")}</td>
+                  <td className="px-3 py-2">{row.eval_summary ? "yes" : "no"}</td>
                 </tr>
               ))}
               {rows.length === 0 && !runsQuery.isLoading ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-slate-500">
+                  <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
                     No runs found.
                   </td>
                 </tr>

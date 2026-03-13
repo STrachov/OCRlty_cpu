@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { GroundTruthView, JobView } from "../api/types";
+import type { GroundTruthView, JobView, RunSummary } from "../api/types";
 
 export type ArtifactItem = Record<string, unknown>;
 export type RunArtifact = Record<string, unknown>;
@@ -24,8 +24,10 @@ export type CreateRunPanelState = {
 type LayoutContextValue = {
   runArtifact: RunArtifact | null;
   focusedItem: ArtifactItem | null;
+  focusedRunSummary: RunSummary | null;
   createRunPanelState: CreateRunPanelState | null;
   setRunInspectorState: (state: { artifact: RunArtifact | null; focusedItem: ArtifactItem | null }) => void;
+  setRunsListState: (state: { focusedRunSummary: RunSummary | null }) => void;
   setCreateRunPanelState: (state: CreateRunPanelState | null) => void;
 };
 

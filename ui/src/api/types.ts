@@ -49,6 +49,17 @@ export type GroundTruthListResponse = {
   items: GroundTruthView[];
 };
 
+export type EvalSummary = {
+  items?: number;
+  gt_found?: number;
+  gt_missing?: number;
+  pred_found?: number;
+  pred_missing?: number;
+  str_mode?: string;
+  decimal_sep?: string;
+  [key: string]: unknown;
+};
+
 export type RunSummary = {
   run_id?: string;
   created_at?: string | null;
@@ -57,6 +68,7 @@ export type RunSummary = {
   ok_count?: number | null;
   error_count?: number | null;
   artifact_rel?: string | null;
+  eval_summary?: EvalSummary | null;
   [key: string]: unknown;
 };
 
@@ -108,7 +120,7 @@ export type ApiErrorResponse = {
 export type BatchArtifact = Record<string, unknown> & {
   items?: Record<string, unknown>[];
   eval?: {
-    summary?: Record<string, unknown>;
+    summary?: EvalSummary;
     by_request_id?: Record<string, {
       gt_ok: boolean;
       pred_ok: boolean;
@@ -149,16 +161,7 @@ export type EvalArtifact = Record<string, unknown> & {
   gt_id?: string;
   gt_name?: string | null;
   batch_artifact_rel?: string;
-  summary?: {
-    items?: number;
-    gt_found?: number;
-    gt_missing?: number;
-    pred_found?: number;
-    pred_missing?: number;
-    str_mode?: string;
-    decimal_sep?: string;
-    [key: string]: unknown;
-  };
+  summary?: EvalSummary;
   fields?: Array<Record<string, unknown>>;
   samples?: EvalSample[];
 };

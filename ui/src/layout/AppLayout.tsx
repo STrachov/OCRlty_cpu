@@ -4,11 +4,13 @@ import { LeftSidebar } from "../components/LeftSidebar";
 import { RightPanel } from "../components/RightPanel";
 import { TopBar } from "../components/TopBar";
 import { LayoutContext, type ArtifactItem, type CreateRunPanelState, type RunArtifact } from "./LayoutContext";
+import type { RunSummary } from "../api/types";
 
 export function AppLayout() {
   const location = useLocation();
   const [runArtifact, setRunArtifact] = useState<RunArtifact | null>(null);
   const [focusedItem, setFocusedItem] = useState<ArtifactItem | null>(null);
+  const [focusedRunSummary, setFocusedRunSummary] = useState<RunSummary | null>(null);
   const [createRunPanelState, setCreateRunPanelState] = useState<CreateRunPanelState | null>(null);
   const [runsRefresh, setRunsRefresh] = useState<(() => void) | undefined>(undefined);
 
@@ -21,10 +23,14 @@ export function AppLayout() {
       value={{
         runArtifact,
         focusedItem,
+        focusedRunSummary,
         createRunPanelState,
         setRunInspectorState: ({ artifact, focusedItem: f }) => {
           setRunArtifact(artifact);
           setFocusedItem(f);
+        },
+        setRunsListState: ({ focusedRunSummary: summary }) => {
+          setFocusedRunSummary(summary);
         },
         setCreateRunPanelState,
       }}

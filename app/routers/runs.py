@@ -21,6 +21,14 @@ from app.settings import settings
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 _ERR = common_error_responses(400, 401, 403, 404, 422, 500)
 
+class EvalSummary(BaseModel):
+    items:Optional[int] = None
+    gt_found:Optional[int] = None
+    gt_missing:Optional[int] = None
+    pred_found:Optional[int] = None
+    pred_missing:Optional[int] = None
+    str_mode:Optional[str] = None
+    decimal_sep:Optional[str] = None
 
 class RunSummary(BaseModel):
     run_id: str
@@ -30,7 +38,7 @@ class RunSummary(BaseModel):
     ok_count: Optional[int] = None
     error_count: Optional[int] = None
     artifact_rel: Optional[str] = None
-    eval_summary: Optional[dict[str, Any]] = None
+    eval_summary: Optional[EvalSummary] = None
 
 
 class RunsListResponse(BaseModel):

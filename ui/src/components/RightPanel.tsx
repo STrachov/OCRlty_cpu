@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useParams} from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CopyButton } from "./CopyButton";
 import { ErrorPanel } from "./ErrorPanel";
@@ -103,7 +103,7 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
   const location = useLocation();
   const { run_id, request_id } = useParams<{ run_id?: string; request_id?: string }>();
   const queryClient = useQueryClient();
-  const { runArtifact, focusedItem, createRunPanelState } = useLayoutContext();
+  const { runArtifact, focusedItem, focusedRunSummary, createRunPanelState } = useLayoutContext();
 
   const runData = useMemo(() => {
     if (!run_id) {
@@ -120,8 +120,12 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
   const itemData = (itemQuery.data ?? null) as Record<string, unknown> | null;
 
   if (location.pathname === "/runs") {
+    const evalSummary =
+      focusedRunSummary && typeof focusedRunSummary.eval_summary === "object" && focusedRunSummary.eval_summary !== null
+        ? focusedRunSummary.eval_summary
+        : null;
     return (
-      <aside className="w-[360px] shrink-0 overflow-y-auto border-l border-slate-200 bg-white p-4">
+      <aside className="w-[360px] shrink-0 space-y-4 overflow-y-auto border-l border-slate-200 bg-white p-4">
         <div className="rounded border border-slate-200 p-3 text-sm">
           <p className="font-medium">Sorted: newest first</p>
           <button
@@ -132,8 +136,41 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
             Refresh
           </button>
         </div>
+        <div className="rounded border border-slate-200 p-3 text-sm">
+          <h3 className="mb-2 text-sm font-semibold">Run Preview</h3>
+          {focusedRunSummary ? (
+            <>
+              <p><span className="font-medium">run_id:</span> {String(focusedRunSummary.run_id ?? "-")}</p>
+              <p><span className="font-medium">task_id:</span> {String(focusedRunSummary.task_id ?? "-")}</p>
+              <p><span className="font-medium">created_at:</span> {String(focusedRunSummary.created_at ?? "-")}</p>
+              <p><span className="font-medium">item_count:</span> {String(focusedRunSummary.item_count ?? "-")}</p>
+              <p><span className="font-medium">ok_count:</span> {String(focusedRunSummary.ok_count ?? "-")}</p>
+              <p><span className="font-medium">error_count:</span> {String(focusedRunSummary.error_count ?? "-")}</p>
+            </>
+          ) : (
+            <p className="text-slate-500">Select a run to preview it here.</p>
+          )}
+        </div>
+        {focusedRunSummary ? (
+          <div className="rounded border border-slate-200 p-3 text-sm">
+            <h3 className="mb-2 text-sm font-semibold">Evaluation</h3>
+            {evalSummary ? (
+              <>
+                <p><span className="font-medium">items:</span> {String(evalSummary.items ?? "-")}</p>
+                <p><span className="font-medium">gt_found:</span> {String(evalSummary.gt_found ?? "-")}</p>
+                <p><span className="font-medium">gt_missing:</span> {String(evalSummary.gt_missing ?? "-")}</p>
+                <p><span className="font-medium">pred_found:</span> {String(evalSummary.pred_found ?? "-")}</p>
+                <p><span className="font-medium">pred_missing:</span> {String(evalSummary.pred_missing ?? "-")}</p>
+                <p><span className="font-medium">str_mode:</span> {String(evalSummary.str_mode ?? "-")}</p>
+                <p><span className="font-medium">decimal_sep:</span> {String(evalSummary.decimal_sep ?? "-")}</p>
+              </>
+            ) : (
+              <p className="text-slate-500">No evaluation for this run.</p>
+            )}
+          </div>
+        ) : null}
       </aside>
-      );
+    );
   }
 
   if (location.pathname === "/runs/new") {
