@@ -61,6 +61,8 @@ class VLLMClient:
                 body_s = _trim(str(r.json()))
             except Exception:
                 body_s = _trim(r.text)
+            if not (body_s or "").strip():
+                body_s = f"Upstream vLLM returned HTTP {r.status_code} with empty response body."
             #raise RuntimeError(f"vLLM HTTP {r.status_code}: {body_s}")
             raise VLLMHTTPError(r.status_code, body_s, dict(r.headers))
         return r.json()

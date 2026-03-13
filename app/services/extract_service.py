@@ -244,6 +244,18 @@ def _normalize_schema(schema: Any) -> Dict[str, Any]:
     return schema
 
 
+def _describe_upstream_http_error(err: VLLMHTTPError) -> str:
+    detail = str(getattr(err, "body_text", "") or "").strip()
+    if detail:
+        return detail
+
+    headers = getattr(err, "headers", {}) or {}
+    upstream_request_id = headers.get("x-request-id") or headers.get("X-Request-ID")
+    if upstream_request_id:
+        return f"Upstream vLLM returned HTTP {err.status_code} with empty response body (x-request-id={upstream_request_id})."
+    return f"Upstream vLLM returned HTTP {err.status_code} with empty response body."
+
+
 def _make_validator_or_raise(schema: Dict[str, Any]) -> Draft202012Validator:
     try:
         Draft202012Validator.check_schema(schema)
@@ -745,12 +757,13 @@ async def extract(
                 meta=artifact["meta"],
             )
         except VLLMHTTPError as e:
-            is_too_long = _is_context_too_long_error(status_code=e.status_code, detail=e.body_text)
-            error_history.append({"attempt": attempt, "http_status": e.status_code, "detail": e.body_text})
+            upstream_detail = _describe_upstream_http_error(e)
+            is_too_long = _is_context_too_long_error(status_code=e.status_code, detail=upstream_detail)
+            error_history.append({"attempt": attempt, "http_status": e.status_code, "detail": upstream_detail})
 
             if is_too_long and attempt < max_attempts and Image is not None:
                 attempt += 1
-                resize_scale *= _compute_retry_scale(attempt=attempt, max_attempts=max_attempts, detail=e.body_text)
+                resize_scale *= _compute_retry_scale(attempt=attempt, max_attempts=max_attempts, detail=upstream_detail)
                 try:
                     current_b64 = await asyncio.to_thread(_resize_base64_image_by_scale, current_b64, scale=resize_scale)
                     messages = _build_messages(prompt_text=prompt_text, image_base64=current_b64, mime_type=mime_type)
@@ -771,7 +784,7 @@ async def extract(
                 "parsed": None,
                 "schema_valid": False,
                 "schema_errors": None,
-                "error": _mk_err("extract_failed", "Extraction failed", detail={"status": e.status_code, "detail": e.body_text}),
+                "error": _mk_err("extract_failed", "Extraction failed", detail={"status": e.status_code, "detail": upstream_detail}),
                 "error_history": error_history or None,
                 "meta": {"attempts": attempt, "resize_scale": resize_scale},
             }

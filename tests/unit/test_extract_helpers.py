@@ -249,3 +249,52 @@ async def test_run_batch_extract_core_prefers_input_ref_for_extract(monkeypatch,
     assert req.image_ref == "inputs/1/receipt.jpg"
     assert req.image_base64 is None
     assert resp.items[0].input_ref == "inputs/1/receipt.jpg"
+
+
+@pytest.mark.asyncio
+async def test_extract_persists_non_empty_detail_for_empty_vllm_http_error(monkeypatch, principal):
+    captured = {}
+
+    monkeypatch.setattr(extract_service.settings, "DEBUG_MODE", True)
+    monkeypatch.setattr(
+        extract_service,
+        "get_str",
+        lambda key, default=None: "vllm" if key == "INFERENCE_BACKEND" else default,
+    )
+    monkeypatch.setattr(
+        extract_service,
+        "_get_task",
+        lambda task_id: {
+            "task_id": task_id,
+            "prompt_value": "return json",
+            "schema_value": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+        },
+    )
+    monkeypatch.setattr(extract_service, "make_request_id", lambda value: value or "req-404")
+    monkeypatch.setattr(extract_service, "_validate_request_id_for_fs", lambda _: None)
+    monkeypatch.setattr(extract_service, "_log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(extract_service, "to_artifact_rel", lambda ref: f"rel/{ref}")
+
+    def _save_artifact(request_id, payload, owner_key_id=None):
+        captured["payload"] = payload
+        return "artifact-404"
+
+    monkeypatch.setattr(extract_service, "save_artifact", _save_artifact)
+
+    vllm_client = AsyncMock()
+    vllm_client.chat_completions.side_effect = VLLMHTTPError(404, "", {"x-request-id": "up-404"})
+
+    req = extract_service.ExtractRequest(
+        task_id="receipt_fields_v1",
+        request_id="req-404",
+        image_base64=base64.b64encode(b"fake-image").decode("ascii"),
+        mime_type="image/jpeg",
+    )
+
+    resp = await extract_service.extract(req=req, principal=principal, vllm_client=vllm_client)
+
+    assert resp.error is not None
+    assert resp.error["detail"]["status"] == 404
+    assert resp.error["detail"]["detail"]
+    assert "up-404" in resp.error["detail"]["detail"]
+    assert captured["payload"]["error_history"][0]["detail"]
