@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CopyButton } from "./CopyButton";
 import { ErrorPanel } from "./ErrorPanel";
 import { ItemInspector } from "./ItemInspector";
 import { downloadJson } from "../utils/downloadJson";
 import { useLayoutContext } from "../layout/LayoutContext";
 import { fetchJson } from "../api/client";
+import { getItem } from "../api/runs";
 import { resolveReceiptImageUrl } from "../utils/resolveReceiptImageUrl";
 
 type RightPanelProps = {
@@ -56,7 +57,7 @@ function ItemImagePreview({ itemData }: { itemData: Record<string, unknown> | nu
   return (
     <>
       <div className="rounded border border-slate-200 p-3 text-sm">
-        <p className="mb-2 font-medium">Receipt image</p>
+        <p className="mb-2 font-medium">Image</p>
         {imgSrc && !imgFailed ? (
           <button
             type="button"
@@ -66,13 +67,13 @@ function ItemImagePreview({ itemData }: { itemData: Record<string, unknown> | nu
             <img
               src={imgSrc}
               alt="Receipt preview"
-              className="max-h-[300px] w-full rounded object-contain"
+              className="max-h-[400px] w-full rounded object-contain"
               onError={() => setImgFailed(true)}
             />
           </button>
         ) : (
           <p className="rounded border border-dashed border-slate-300 p-3 text-xs text-slate-500">
-            Receipt image not available
+            Image not available
           </p>
         )}
       </div>
@@ -111,12 +112,12 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
     return (queryClient.getQueryData(["run", run_id]) ?? runArtifact) as Record<string, unknown> | null;
   }, [queryClient, runArtifact, run_id]);
 
-  const itemData = useMemo(() => {
-    if (!request_id) {
-      return null;
-    }
-    return queryClient.getQueryData(["item", request_id]) as Record<string, unknown> | null;
-  }, [queryClient, request_id]);
+  const itemQuery = useQuery({
+    queryKey: ["item", request_id],
+    queryFn: () => getItem(request_id ?? ""),
+    enabled: Boolean(request_id),
+  });
+  const itemData = (itemQuery.data ?? null) as Record<string, unknown> | null;
 
   if (location.pathname === "/runs") {
     return (
