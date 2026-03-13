@@ -30,6 +30,7 @@ class RunSummary(BaseModel):
     ok_count: Optional[int] = None
     error_count: Optional[int] = None
     artifact_rel: Optional[str] = None
+    eval_summary: Optional[dict[str, Any]] = None
 
 
 class RunsListResponse(BaseModel):
@@ -113,6 +114,8 @@ async def list_runs(
             continue
         if not isinstance(obj, dict):
             continue
+        eval_obj = obj.get("eval")
+        summary = eval_obj.get("summary") if isinstance(eval_obj, dict) else None
         items.append(
             RunSummary(
                 run_id=run_id,
@@ -122,6 +125,7 @@ async def list_runs(
                 ok_count=obj.get("ok_count"),
                 error_count=obj.get("error_count"),
                 artifact_rel=rel_ref or None,
+                eval_summary=summary
             )
         )
 
