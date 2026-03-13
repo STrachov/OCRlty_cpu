@@ -325,11 +325,23 @@ def _extract_context_lengths(detail: Any) -> Optional[Tuple[int, int]]:
     return current_len, max_len
 
 
-def _compute_retry_scale(*, attempt: int, max_attempts: int, detail: Any = None) -> float:
+def _compute_context_prompt_budget(*, model_len: int, max_tokens: int) -> int:
+    reserve = max(
+        int(max_tokens),
+        int(getattr(settings, "VLLM_CONTEXT_RESPONSE_RESERVE_TOKENS", 512) or 512),
+    )
+    safety = int(getattr(settings, "VLLM_CONTEXT_SAFETY_MARGIN_TOKENS", 256) or 256)
+    return max(256, int(model_len) - reserve - safety)
+
+
+def _compute_retry_scale(*, attempt: int, max_attempts: int, detail: Any = None, max_tokens: int = 0) -> float:
     ctx = _extract_context_lengths(detail)
     if ctx is not None:
         current_len, max_len = ctx
-        adaptive = (max_len / current_len) * 0.9
+        configured_model_len = int(getattr(settings, "VLLM_MAX_MODEL_LEN", max_len) or max_len)
+        effective_model_len = min(max_len, configured_model_len) if configured_model_len > 0 else max_len
+        prompt_budget = _compute_context_prompt_budget(model_len=effective_model_len, max_tokens=max_tokens)
+        adaptive = prompt_budget / current_len
         return max(0.10, min(0.95, adaptive))
 
     # progressively shrink
@@ -337,6 +349,16 @@ def _compute_retry_scale(*, attempt: int, max_attempts: int, detail: Any = None)
         return 1.0
     # 1.0 -> 0.6 -> 0.4 -> 0.3 ...
     return max(0.10, 1.0 - (attempt - 1) * (0.7 / max(1, max_attempts - 1)))
+
+
+def _compute_retry_max_tokens(*, current_max_tokens: int, attempt: int) -> int:
+    floor = min(256, current_max_tokens)
+    if floor <= 0:
+        floor = 128
+    if attempt <= 1:
+        return current_max_tokens
+    reduced = int(round(current_max_tokens * (0.75 ** (attempt - 1))))
+    return max(floor, min(current_max_tokens, reduced))
 
 
 def _resize_base64_image_by_scale(image_base64: str, *, scale: float) -> str:
@@ -617,6 +639,7 @@ async def extract(
     attempt = 1
     max_attempts = int(getattr(settings, "VLLM_CONTEXT_MAX_ATTEMPTS", 3) or 3)
     resize_scale = 1.0
+    effective_max_tokens = max_tokens
     current_b64 = req_image_base64
     last_raw: Any = None
 
@@ -642,7 +665,7 @@ async def extract(
                     model_id=model_id,
                     messages=messages,
                     temperature=temperature,
-                    max_tokens=max_tokens,
+                    max_tokens=effective_max_tokens,
                     response_format=response_format,
                 )
 
@@ -679,12 +702,13 @@ async def extract(
                 "schema_errors": None,
                 "error": None,
                 "error_history": error_history or None,
-                "meta": {
-                    "attempts": attempt,
-                    "resize_scale": resize_scale,
-                    "image_tokens_est": _estimate_prompt_tokens(prompt_text),
-                },
-            }
+                    "meta": {
+                        "attempts": attempt,
+                        "resize_scale": resize_scale,
+                        "max_tokens_effective": effective_max_tokens,
+                        "image_tokens_est": _estimate_prompt_tokens(prompt_text),
+                    },
+                }
 
             artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
 
@@ -712,7 +736,13 @@ async def extract(
 
             if is_too_long and attempt < max_attempts and Image is not None:
                 attempt += 1
-                resize_scale *= _compute_retry_scale(attempt=attempt, max_attempts=max_attempts, detail=e.detail)
+                resize_scale *= _compute_retry_scale(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    detail=e.detail,
+                    max_tokens=effective_max_tokens,
+                )
+                effective_max_tokens = _compute_retry_max_tokens(current_max_tokens=effective_max_tokens, attempt=attempt)
                 try:
                     current_b64 = await asyncio.to_thread(_resize_base64_image_by_scale, current_b64, scale=resize_scale)
                     messages = _build_messages(prompt_text=prompt_text, image_base64=current_b64, mime_type=mime_type)
@@ -736,7 +766,7 @@ async def extract(
                 "schema_errors": None,
                 "error": _mk_err("extract_failed", "Extraction failed", detail={"status": e.status_code, "detail": e.detail}),
                 "error_history": error_history or None,
-                "meta": {"attempts": attempt, "resize_scale": resize_scale},
+                "meta": {"attempts": attempt, "resize_scale": resize_scale, "max_tokens_effective": effective_max_tokens},
             }
             artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
             return ExtractResponse(
@@ -763,7 +793,13 @@ async def extract(
 
             if is_too_long and attempt < max_attempts and Image is not None:
                 attempt += 1
-                resize_scale *= _compute_retry_scale(attempt=attempt, max_attempts=max_attempts, detail=upstream_detail)
+                resize_scale *= _compute_retry_scale(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    detail=upstream_detail,
+                    max_tokens=effective_max_tokens,
+                )
+                effective_max_tokens = _compute_retry_max_tokens(current_max_tokens=effective_max_tokens, attempt=attempt)
                 try:
                     current_b64 = await asyncio.to_thread(_resize_base64_image_by_scale, current_b64, scale=resize_scale)
                     messages = _build_messages(prompt_text=prompt_text, image_base64=current_b64, mime_type=mime_type)
@@ -786,7 +822,7 @@ async def extract(
                 "schema_errors": None,
                 "error": _mk_err("extract_failed", "Extraction failed", detail={"status": e.status_code, "detail": upstream_detail}),
                 "error_history": error_history or None,
-                "meta": {"attempts": attempt, "resize_scale": resize_scale},
+                "meta": {"attempts": attempt, "resize_scale": resize_scale, "max_tokens_effective": effective_max_tokens},
             }
             artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
             return ExtractResponse(
@@ -823,7 +859,7 @@ async def extract(
                 "schema_errors": None,
                 "error": _mk_err("extract_failed", "Unhandled extraction error", detail={"error": str(e)}),
                 "error_history": error_history or None,
-                "meta": {"attempts": attempt, "resize_scale": resize_scale},
+                "meta": {"attempts": attempt, "resize_scale": resize_scale, "max_tokens_effective": effective_max_tokens},
             }
             artifact_ref = await asyncio.to_thread(save_artifact, request_id, artifact, principal.key_id)
             return ExtractResponse(

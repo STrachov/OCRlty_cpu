@@ -61,13 +61,28 @@ def test_extract_context_lengths_parses_vllm_message():
     ) == (9597, 4096)
 
 
-def test_compute_retry_scale_uses_adaptive_ratio_from_error():
+def test_compute_retry_scale_uses_adaptive_ratio_from_error(monkeypatch):
+    monkeypatch.setattr(extract_service.settings, "VLLM_MAX_MODEL_LEN", 8192)
+    monkeypatch.setattr(extract_service.settings, "VLLM_CONTEXT_RESPONSE_RESERVE_TOKENS", 512)
+    monkeypatch.setattr(extract_service.settings, "VLLM_CONTEXT_SAFETY_MARGIN_TOKENS", 256)
     scale = extract_service._compute_retry_scale(
         attempt=2,
         max_attempts=3,
         detail="The decoder prompt (length 9597) is longer than the maximum model length of 4096",
+        max_tokens=1024,
     )
     assert 0.10 < scale < 0.50
+
+
+def test_compute_context_prompt_budget_reserves_completion_and_margin(monkeypatch):
+    monkeypatch.setattr(extract_service.settings, "VLLM_CONTEXT_RESPONSE_RESERVE_TOKENS", 512)
+    monkeypatch.setattr(extract_service.settings, "VLLM_CONTEXT_SAFETY_MARGIN_TOKENS", 256)
+    assert extract_service._compute_context_prompt_budget(model_len=8192, max_tokens=1024) == 6912
+
+
+def test_compute_retry_max_tokens_reduces_budget_on_retry():
+    assert extract_service._compute_retry_max_tokens(current_max_tokens=1024, attempt=2) < 1024
+    assert extract_service._compute_retry_max_tokens(current_max_tokens=1024, attempt=2) >= 256
 
 
 @pytest.mark.asyncio
