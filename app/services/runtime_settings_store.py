@@ -129,3 +129,9 @@ class RuntimeSettingsStore:
             row = self._fetchone(conn, "SELECT * FROM runtime_settings WHERE key = %s LIMIT 1;", (key,))
             assert row is not None
             return self._row_to_record(row)
+
+    def delete(self, key: str) -> None:
+        self.ensure_init()
+        with self._connect() as conn:
+            self._execute(conn, "DELETE FROM runtime_settings WHERE key = %s;", (key,))
+            conn.commit()

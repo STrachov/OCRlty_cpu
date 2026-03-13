@@ -75,7 +75,10 @@ async def update_runtime_setting(
     _store(request)
     _require_admin(principal)
     try:
-        runtime_config.set_value(key=key, value=body.value, updated_by_key_id=principal.key_id)
+        if body.value == "":
+            runtime_config.reset_value(key=key)
+        else:
+            runtime_config.set_value(key=key, value=body.value, updated_by_key_id=principal.key_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Runtime setting not found.")
     except ValueError as e:

@@ -57,3 +57,40 @@ async def test_update_runtime_setting_returns_updated_value(monkeypatch):
     assert resp.key == "DEBUG_MODE"
     assert resp.effective_value is True
     assert resp.source == "db"
+
+
+@pytest.mark.asyncio
+async def test_update_runtime_setting_empty_string_resets_to_env(monkeypatch):
+    called = {"reset": None}
+
+    monkeypatch.setattr(
+        admin_runtime_settings.runtime_config,
+        "reset_value",
+        lambda **kwargs: called.__setitem__("reset", kwargs["key"]),
+    )
+    monkeypatch.setattr(
+        admin_runtime_settings.runtime_config,
+        "list_effective_settings",
+        lambda: [
+            {
+                "key": "DEBUG_MODE",
+                "value": None,
+                "effective_value": False,
+                "source": "env",
+                "updated_at": None,
+                "is_secret": False,
+                "is_set": False,
+            }
+        ],
+    )
+
+    resp = await admin_runtime_settings.update_runtime_setting(
+        key="DEBUG_MODE",
+        body=admin_runtime_settings.RuntimeSettingUpdateRequest(value=""),
+        request=_request_with_store(object()),
+        principal=_principal(role="admin"),
+    )
+    assert called["reset"] == "DEBUG_MODE"
+    assert resp.key == "DEBUG_MODE"
+    assert resp.source == "env"
+    assert resp.effective_value is False

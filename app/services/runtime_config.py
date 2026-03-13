@@ -145,6 +145,13 @@ def set_value(*, key: str, value: str, updated_by_key_id: Optional[str]) -> Runt
     return rec
 
 
+def reset_value(*, key: str) -> None:
+    if key not in _META:
+        raise KeyError(key)
+    _STORE.delete(key)
+    invalidate_cache()
+
+
 def list_effective_settings() -> list[dict[str, Any]]:
     _load_cache()
     items: list[dict[str, Any]] = []
