@@ -130,10 +130,13 @@ export function RunDetailsPage() {
   const topErrorCount = (artifact.error_count as number | null | undefined) ?? "-";
   const topArtifactRel = (artifact.artifact_rel as string | null | undefined) ?? "-";
   const evalArtifactRel = typeof batchEval?.eval_artifact_rel === "string" ? batchEval.eval_artifact_rel : null;
-  const getItemHref = (requestId: string) => {
+  const getItemHref = (requestId: string, fileName?: string) => {
     const query = new URLSearchParams();
     if (evalArtifactRel) {
       query.set("eval_artifact_rel", evalArtifactRel);
+    }
+    if (fileName) {
+      query.set("file_name", fileName);
     }
     return `/items/${encodeURIComponent(requestId)}${query.toString() ? `?${query.toString()}` : ""}`;
   };
@@ -220,8 +223,9 @@ export function RunDetailsPage() {
               } else if (e.key === "Enter") {
                 const current = filteredItems[focusedIndex];
                 const requestId = typeof current?.request_id === "string" ? current.request_id : "";
+                const fileName = typeof current?.file === "string" ? current.file : undefined;
                 if (requestId) {
-                  navigate(getItemHref(requestId), { state: { runId: run_id } });
+                  navigate(getItemHref(requestId, fileName), { state: { runId: run_id } });
                 }
               }
             }}
@@ -240,6 +244,7 @@ export function RunDetailsPage() {
               <tbody>
                 {filteredItems.map((item, idx) => {
                   const requestId = typeof item.request_id === "string" ? item.request_id : "";
+                  const fileName = typeof item.file === "string" ? item.file : undefined;
                   const isFocused = idx === focusedIndex;
                   const ev = requestId ? evalByRequestId[requestId] : undefined;
                   const evalFail = hasEvalFail(ev);
@@ -253,7 +258,7 @@ export function RunDetailsPage() {
                         {requestId ? (
                           <Link
                             className="text-blue-700 hover:underline"
-                            to={getItemHref(requestId)}
+                            to={getItemHref(requestId, fileName)}
                             state={{ runId: run_id }}
                           >
                             {typeof item.file === "string" ? item.file : "-"}

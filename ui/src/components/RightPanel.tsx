@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CopyButton } from "./CopyButton";
 import { ErrorPanel } from "./ErrorPanel";
@@ -102,6 +102,7 @@ function ItemImagePreview({ itemData }: { itemData: Record<string, unknown> | nu
 export function RightPanel({ onRefreshRuns }: RightPanelProps) {
   const location = useLocation();
   const { run_id, request_id } = useParams<{ run_id?: string; request_id?: string }>();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { runArtifact, focusedItem, createRunPanelState } = useLayoutContext();
 
@@ -255,16 +256,24 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
 
   if (location.pathname.startsWith("/items/") && request_id) {
     const displayId = typeof itemData?.request_id === "string" ? itemData.request_id : request_id;
+    const originalFileName = searchParams.get("file_name");
     return (
       <aside className="w-[360px] shrink-0 overflow-y-auto border-l border-slate-200 bg-white p-4">
         <div className="space-y-4">
           <ItemImagePreview itemData={itemData} />
           <div className="rounded border border-slate-200 p-3 text-sm">
             <p className="mb-2 font-medium">Item Context</p>
+            <p className="mb-1 font-medium text-slate-700">request_id</p>
             <div className="mb-3 flex items-center gap-2">
               <span className="font-mono text-xs">{displayId}</span>
               <CopyButton text={displayId} />
             </div>
+            {originalFileName ? (
+              <div className="mb-3">
+                <p className="mb-1 font-medium text-slate-700">original file</p>
+                <p className="break-all text-xs text-slate-700">{originalFileName}</p>
+              </div>
+            ) : null}
             <button
               type="button"
               onClick={() => downloadJson(`item-${displayId}.json`, itemData ?? {})}
