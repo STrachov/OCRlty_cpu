@@ -9,6 +9,40 @@ def _principal() -> ApiPrincipal:
     return ApiPrincipal(api_key_id=1, key_id="k1", role="client", scopes={"debug:run", "extract:run"})
 
 
+def test_canon_x_money_normalizes_without_minor_units(monkeypatch):
+    monkeypatch.setattr(handlers, "_get_decimal_sep", lambda: ".")
+
+    assert handlers.canon_x_money("580965") == (True, "580965", None)
+    assert handlers.canon_x_money("580965.00") == (True, "580965", None)
+    assert handlers.canon_x_money("1,234,567.89") == (True, "1234567.89", None)
+    assert handlers.canon_x_money("52,815") == (True, "52815", None)
+
+
+def test_canon_x_money_rejects_invalid_or_ambiguous_grouping(monkeypatch):
+    monkeypatch.setattr(handlers, "_get_decimal_sep", lambda: ".")
+
+    ok, value, err = handlers.canon_x_money("580,96")
+    assert ok is False
+    assert value is None
+    assert "invalid grouping" in str(err)
+
+    ok, value, err = handlers.canon_x_money("1.234,56")
+    assert ok is False
+    assert value is None
+
+
+def test_canon_x_count_requires_integer_semantics(monkeypatch):
+    monkeypatch.setattr(handlers, "_get_decimal_sep", lambda: ".")
+
+    assert handlers.canon_x_count("1,234") == (True, "1234", None)
+    assert handlers.canon_x_count("0012") == (True, "12", None)
+
+    ok, value, err = handlers.canon_x_count("12.50")
+    assert ok is False
+    assert value is None
+    assert "fractional part is not allowed" in str(err)
+
+
 @pytest.mark.asyncio
 async def test_eval_batch_vs_gt_uses_gt_id(monkeypatch):
     captured = {}

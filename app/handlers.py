@@ -11,6 +11,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -410,7 +411,30 @@ def _get_decimal_sep() -> str:
     return str(getattr(settings, "DECIMAL_SEP", ".") or ".").strip()[:1] or "."
 
 
-def canon_x_money(v: Any, *, decimal_sep: Optional[str] = None) -> Tuple[bool, Optional[int], Optional[str]]:
+def _normalize_grouped_integer(integer_part: str, *, group_sep: str) -> Tuple[bool, Optional[str], Optional[str]]:
+    if not integer_part:
+        return True, "0", None
+    if group_sep not in integer_part:
+        return (True, integer_part, None) if integer_part.isdigit() else (False, None, "invalid digits")
+
+    groups = integer_part.split(group_sep)
+    if not groups or any(not g for g in groups):
+        return False, None, "invalid grouping"
+    if not groups[0].isdigit() or len(groups[0]) > 3:
+        return False, None, "invalid grouping"
+    for g in groups[1:]:
+        if not g.isdigit() or len(g) != 3:
+            return False, None, "invalid grouping"
+    return True, "".join(groups), None
+
+
+def _canon_numeric_string(
+    v: Any,
+    *,
+    decimal_sep: Optional[str],
+    allow_fraction: bool,
+    label: str,
+) -> Tuple[bool, Optional[str], Optional[str]]:
     if v is None:
         return True, None, None
     s = str(v).strip()
@@ -418,59 +442,64 @@ def canon_x_money(v: Any, *, decimal_sep: Optional[str] = None) -> Tuple[bool, O
         return True, None, None
 
     dec = (decimal_sep or _get_decimal_sep()).strip()[:1] or "."
+    grp = "," if dec == "." else "."
     s = s.replace(" ", "").replace("\u00a0", "")
+    # remove common currency/letter noise but keep numeric separators/sign
+    s = re.sub(r"[^0-9,\.\-]+", "", s)
+    if s in {"", "-", dec, f"-{dec}"}:
+        return False, None, f"{label}: cannot parse"
 
-    # normalize decimal separator to "."
-    if dec != ".":
-        s = s.replace(dec, ".")
-    # common cases: "1,23" or "1.234,56"
-    if "," in s and "." in s:
-        # assume "," is decimal sep, "." thousands
-        s = s.replace(".", "").replace(",", ".")
-    elif "," in s and "." not in s:
-        s = s.replace(",", ".")
+    negative = s.startswith("-")
+    body = s[1:] if negative else s
+    if "-" in body:
+        return False, None, f"{label}: cannot parse"
+    if body.count(dec) > 1:
+        return False, None, f"{label}: cannot parse"
 
-    # remove currency symbols
-    s = re.sub(r"[^0-9.\-]+", "", s)
-    if s in {"", "-", ".", "-."}:
-        return False, None, "x-money: cannot parse"
+    if dec in body:
+        integer_part, fraction_part = body.split(dec, 1)
+    else:
+        integer_part, fraction_part = body, ""
+
+    if grp in fraction_part:
+        return False, None, f"{label}: invalid grouping"
+
+    ok_int, normalized_int, int_err = _normalize_grouped_integer(integer_part, group_sep=grp)
+    if not ok_int or normalized_int is None:
+        return False, None, f"{label}: {int_err or 'cannot parse'}"
+
+    if fraction_part and not fraction_part.isdigit():
+        return False, None, f"{label}: cannot parse"
+
+    if not allow_fraction:
+        if fraction_part.strip("0"):
+            return False, None, f"{label}: fractional part is not allowed"
+        fraction_part = ""
+
+    normalized_int = normalized_int.lstrip("0") or "0"
+    normalized = normalized_int
+    if fraction_part:
+        normalized_fraction = fraction_part.rstrip("0")
+        if normalized_fraction:
+            normalized = f"{normalized_int}.{normalized_fraction}"
+
+    if negative and normalized != "0":
+        normalized = f"-{normalized}"
 
     try:
-        # store as integer cents
-        val = float(s)
-        cents = int(round(val * 100))
-        return True, cents, None
-    except Exception:
-        return False, None, "x-money: cannot parse"
+        # Validate final canonical representation without changing scale.
+        Decimal(normalized)
+    except InvalidOperation:
+        return False, None, f"{label}: cannot parse"
+    return True, normalized, None
 
 
-def canon_x_count(v: Any, *, decimal_sep: Optional[str] = None) -> Tuple[bool, Optional[int], Optional[str]]:
-    if v is None:
-        return True, None, None
-    s = str(v).strip()
-    if not s:
-        return True, None, None
+def canon_x_money(v: Any, *, decimal_sep: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+    return _canon_numeric_string(v, decimal_sep=decimal_sep, allow_fraction=True, label="x-money")
 
-    dec = (decimal_sep or _get_decimal_sep()).strip()[:1] or "."
-    s = s.replace(" ", "").replace("\u00a0", "")
 
-    if dec != ".":
-        s = s.replace(dec, ".")
-    if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")
-    elif "," in s and "." not in s:
-        s = s.replace(",", ".")
-
-    s = re.sub(r"[^0-9.\-]+", "", s)
-    if s in {"", "-", ".", "-."}:
-        return False, None, "x-count: cannot parse"
-
-    try:
-        val = float(s)
-        # store counts as int (rounded)
-        return True, int(round(val)), None
-    except Exception:
-        return False, None, "x-count: cannot parse"
+def canon_x_count(v: Any, *, decimal_sep: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+    return _canon_numeric_string(v, decimal_sep=decimal_sep, allow_fraction=False, label="x-count")
 
 
 def _deref_schema(schema: Dict[str, Any], *, root_schema: Dict[str, Any]) -> Dict[str, Any]:
