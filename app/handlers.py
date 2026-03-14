@@ -903,10 +903,17 @@ async def eval_batch_vs_gt(
         rid = str(s.get("request_id") or "")
         if not rid:
             continue
+        mismatches = s.get("mismatches") or []
+        mismatch_paths = [
+            m.get("path")
+            for m in mismatches
+            if isinstance(m, dict) and m.get("path") 
+        ]
         by_request_id[rid] = {
             "gt_ok": bool(s.get("gt_ok")),
             "pred_ok": bool(s.get("pred_ok")),
             "mismatches_count": int(s.get("mismatches_count") or 0),
+            "mismatches_paths":mismatch_paths
         }
 
     return EvalBatchVsGTResponse(

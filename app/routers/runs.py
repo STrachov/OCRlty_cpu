@@ -17,6 +17,7 @@ from app.services.artifacts import (
     read_artifact_json,
 )
 from app.settings import settings
+from collections import Counter
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 _ERR = common_error_responses(400, 401, 403, 404, 422, 500)
@@ -30,6 +31,7 @@ class EvalSummary(BaseModel):
     str_mode:Optional[str] = None
     decimal_sep:Optional[str] = None
     mismatched:Optional[int] = None
+    mismatches_paths: dict[str, int] | None = None
 
 class RunSummary(BaseModel):
     run_id: str
@@ -136,6 +138,16 @@ async def list_runs(
                 for row in by_request_id.values()
                 if isinstance(row, dict) and int(row.get("mismatches_count", 0) or 0) > 0
             )
+        
+        mismatches_paths_counter = None
+        if isinstance(by_request_id, dict):
+            mismatches_paths_counter = Counter(
+                path
+                for row in by_request_id.values()
+                if isinstance(row, dict)
+                for path in (row.get("mismatches_paths") or [])
+                if path
+            )
         items.append(
             RunSummary(
                 run_id=run_id,
@@ -149,6 +161,7 @@ async def list_runs(
                 eval_summary=EvalSummary(
                     **summary,
                     mismatched=mismatched,
+                    mismatches_paths=mismatches_paths_counter
                 ) if isinstance(summary, dict) else None
             )
         )
