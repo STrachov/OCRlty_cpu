@@ -50,7 +50,7 @@ async def test_list_runs_uses_cursor_and_returns_next(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_runs_builds_eval_summary_with_mismatch_paths(monkeypatch):
+async def test_list_runs_builds_eval_summary_with_fields(monkeypatch):
     monkeypatch.setattr(
         runs,
         "list_batch_artifacts",
@@ -80,18 +80,19 @@ async def test_list_runs_builds_eval_summary_with_mismatch_paths(monkeypatch):
                     "gt_found": 3,
                     "pred_found": 3,
                 },
+                "fields": [
+                    {"path": "tax", "mismatch": 2, "matched": 1, "accuracy": 0.333},
+                    {"path": "total", "mismatch": 1, "matched": 2, "accuracy": 0.666},
+                ],
                 "by_request_id": {
                     "r1": {
                         "mismatches_count": 2,
-                        "mismatches_paths": ["total", "tax"],
                     },
                     "r2": {
                         "mismatches_count": 1,
-                        "mismatches_paths": ["tax", "", None],
                     },
                     "r3": {
                         "mismatches_count": 0,
-                        "mismatches_paths": ["ignored_when_zero_but_still_safe"],
                     },
                 },
             },
@@ -103,10 +104,10 @@ async def test_list_runs_builds_eval_summary_with_mismatch_paths(monkeypatch):
     assert len(resp.items) == 1
     assert resp.items[0].eval_summary is not None
     assert resp.items[0].eval_summary.mismatched == 2
-    assert resp.items[0].eval_summary.mismatches_paths == {
-        "tax": 2,
-        "total": 1,
-    }
+    assert resp.items[0].eval_summary.fields == [
+        {"path": "tax", "mismatch": 2, "matched": 1, "accuracy": 0.333},
+        {"path": "total", "mismatch": 1, "matched": 2, "accuracy": 0.666},
+    ]
 
 
 @pytest.mark.asyncio

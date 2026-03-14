@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -31,7 +30,7 @@ class EvalSummary(BaseModel):
     str_mode:Optional[str] = None
     decimal_sep:Optional[str] = None
     mismatched:Optional[int] = None
-    mismatches_paths: dict[str, int] | None = None
+    fields: Optional[List[Dict[str, Any]]] = None
 
 class RunSummary(BaseModel):
     run_id: str
@@ -57,10 +56,11 @@ def _build_eval_summary(eval_obj: Any) -> Optional[EvalSummary]:
 
     raw_summary = eval_obj.get("summary")
     summary = raw_summary if isinstance(raw_summary, dict) else {}
+    raw_fields = eval_obj.get("fields")
+    fields = raw_fields if isinstance(raw_fields, list) else None
     by_request_id = eval_obj.get("by_request_id")
 
     mismatched: Optional[int] = None
-    mismatch_paths_counter: Counter[str] = Counter()
 
     if isinstance(by_request_id, dict):
         mismatched = sum(
@@ -68,27 +68,14 @@ def _build_eval_summary(eval_obj: Any) -> Optional[EvalSummary]:
             for row in by_request_id.values()
             if isinstance(row, dict) and int(row.get("mismatches_count", 0) or 0) > 0
         )
-        for row in by_request_id.values():
-            if not isinstance(row, dict):
-                continue
-            if int(row.get("mismatches_count", 0) or 0) <= 0:
-                continue
-            raw_paths = row.get("mismatches_paths")
-            if not isinstance(raw_paths, list):
-                continue
-            mismatch_paths_counter.update(
-                path
-                for path in raw_paths
-                if isinstance(path, str) and path
-            )
 
-    if not summary and mismatched is None and not mismatch_paths_counter:
+    if not summary and mismatched is None and fields is None:
         return None
 
     return EvalSummary(
         **summary,
         mismatched=mismatched,
-        mismatches_paths=dict(sorted(mismatch_paths_counter.items())) or None,
+        fields=fields,
     )
 
 

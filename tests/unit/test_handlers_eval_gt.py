@@ -106,6 +106,8 @@ async def test_eval_batch_vs_gt_uses_gt_id(monkeypatch):
     assert resp.gt_name == "gt.json"
     assert resp.summary is not None
     assert resp.summary["gt_found"] == 1
+    assert resp.fields is not None
+    assert any(isinstance(row, dict) and row.get("path") == "total_raw" for row in resp.fields)
     assert resp.by_request_id is not None
     assert resp.by_request_id["r1"]["mismatches_count"] == 0
     assert captured["owner_key_id"] == "k1"
