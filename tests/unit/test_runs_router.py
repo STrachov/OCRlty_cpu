@@ -50,6 +50,66 @@ async def test_list_runs_uses_cursor_and_returns_next(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_runs_builds_eval_summary_with_mismatch_paths(monkeypatch):
+    monkeypatch.setattr(
+        runs,
+        "list_batch_artifacts",
+        lambda **_: (
+            [
+                {
+                    "artifact_id": "run-eval",
+                    "full_ref": "/x/run-eval.json",
+                    "rel_ref": "batches/2026-03-14/run-eval.json",
+                },
+            ],
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        runs,
+        "read_artifact_json",
+        lambda _: {
+            "created_at": "2026-03-14T10:00:00Z",
+            "task_id": "receipt_fields_v1",
+            "item_count": 3,
+            "ok_count": 3,
+            "error_count": 0,
+            "eval": {
+                "summary": {
+                    "items": 3,
+                    "gt_found": 3,
+                    "pred_found": 3,
+                },
+                "by_request_id": {
+                    "r1": {
+                        "mismatches_count": 2,
+                        "mismatches_paths": ["total", "tax"],
+                    },
+                    "r2": {
+                        "mismatches_count": 1,
+                        "mismatches_paths": ["tax", "", None],
+                    },
+                    "r3": {
+                        "mismatches_count": 0,
+                        "mismatches_paths": ["ignored_when_zero_but_still_safe"],
+                    },
+                },
+            },
+        },
+    )
+
+    resp = await runs.list_runs(principal=_principal(), limit=10, cursor=None)
+
+    assert len(resp.items) == 1
+    assert resp.items[0].eval_summary is not None
+    assert resp.items[0].eval_summary.mismatched == 2
+    assert resp.items[0].eval_summary.mismatches_paths == {
+        "tax": 2,
+        "total": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_run_forbidden_for_non_owner(monkeypatch):
     monkeypatch.setattr(runs, "find_batch_artifact_path", lambda *_args, **_kwargs: "/x/run1.json")
     monkeypatch.setattr(runs, "read_artifact_json", lambda _: {"auth": {"key_id": "owner-1"}})

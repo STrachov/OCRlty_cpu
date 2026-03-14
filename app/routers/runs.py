@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,7 +18,6 @@ from app.services.artifacts import (
     read_artifact_json,
 )
 from app.settings import settings
-from collections import Counter
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 _ERR = common_error_responses(400, 401, 403, 404, 422, 500)
@@ -49,6 +49,47 @@ class RunsListResponse(BaseModel):
     items: List[RunSummary] = Field(default_factory=list)
     limit: int
     next_cursor: Optional[str] = None
+
+
+def _build_eval_summary(eval_obj: Any) -> Optional[EvalSummary]:
+    if not isinstance(eval_obj, dict):
+        return None
+
+    raw_summary = eval_obj.get("summary")
+    summary = raw_summary if isinstance(raw_summary, dict) else {}
+    by_request_id = eval_obj.get("by_request_id")
+
+    mismatched: Optional[int] = None
+    mismatch_paths_counter: Counter[str] = Counter()
+
+    if isinstance(by_request_id, dict):
+        mismatched = sum(
+            1
+            for row in by_request_id.values()
+            if isinstance(row, dict) and int(row.get("mismatches_count", 0) or 0) > 0
+        )
+        for row in by_request_id.values():
+            if not isinstance(row, dict):
+                continue
+            if int(row.get("mismatches_count", 0) or 0) <= 0:
+                continue
+            raw_paths = row.get("mismatches_paths")
+            if not isinstance(raw_paths, list):
+                continue
+            mismatch_paths_counter.update(
+                path
+                for path in raw_paths
+                if isinstance(path, str) and path
+            )
+
+    if not summary and mismatched is None and not mismatch_paths_counter:
+        return None
+
+    return EvalSummary(
+        **summary,
+        mismatched=mismatched,
+        mismatches_paths=dict(sorted(mismatch_paths_counter.items())) or None,
+    )
 
 
 def _encode_cursor(created_at: str, run_id: str) -> str:
@@ -128,26 +169,7 @@ async def list_runs(
             continue
         timings_ms = obj.get("timings_ms")
         total_time = timings_ms.get("total") if isinstance(timings_ms, dict) else None
-        eval_obj = obj.get("eval")
-        summary = eval_obj.get("summary") if isinstance(eval_obj, dict) else None
-        by_request_id = eval_obj.get("by_request_id") if isinstance(eval_obj, dict) else None
-        mismatched = None
-        if isinstance(by_request_id, dict):
-            mismatched = sum(
-                1
-                for row in by_request_id.values()
-                if isinstance(row, dict) and int(row.get("mismatches_count", 0) or 0) > 0
-            )
-        
-        mismatches_paths_counter = None
-        if isinstance(by_request_id, dict):
-            mismatches_paths_counter = Counter(
-                path
-                for row in by_request_id.values()
-                if isinstance(row, dict)
-                for path in (row.get("mismatches_paths") or [])
-                if path
-            )
+        eval_summary = _build_eval_summary(obj.get("eval"))
         items.append(
             RunSummary(
                 run_id=run_id,
@@ -158,11 +180,7 @@ async def list_runs(
                 error_count=obj.get("error_count"),
                 artifact_rel=rel_ref or None,
                 total_time=total_time,
-                eval_summary=EvalSummary(
-                    **summary,
-                    mismatched=mismatched,
-                    mismatches_paths=mismatches_paths_counter
-                ) if isinstance(summary, dict) else None
+                eval_summary=eval_summary,
             )
         )
     next_cursor = _encode_cursor(next_cur[0], next_cur[1]) if next_cur else None
