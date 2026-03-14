@@ -68,6 +68,7 @@ export type RunSummary = {
   item_count?: number | null;
   ok_count?: number | null;
   error_count?: number | null;
+  total_time?: number | null;
   artifact_rel?: string | null;
   eval_summary?: EvalSummary | null;
   [key: string]: unknown;

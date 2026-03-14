@@ -38,6 +38,7 @@ class RunSummary(BaseModel):
     item_count: Optional[int] = None
     ok_count: Optional[int] = None
     error_count: Optional[int] = None
+    total_time: Optional[int] = None
     artifact_rel: Optional[str] = None
     eval_summary: Optional[EvalSummary] = None
 
@@ -123,6 +124,8 @@ async def list_runs(
             continue
         if not isinstance(obj, dict):
             continue
+        timings_ms = obj.get("timings_ms")
+        total_time = timings_ms.get("total") if isinstance(timings_ms, dict) else None
         eval_obj = obj.get("eval")
         summary = eval_obj.get("summary") if isinstance(eval_obj, dict) else None
         by_request_id = eval_obj.get("by_request_id") if isinstance(eval_obj, dict) else None
@@ -142,6 +145,7 @@ async def list_runs(
                 ok_count=obj.get("ok_count"),
                 error_count=obj.get("error_count"),
                 artifact_rel=rel_ref or None,
+                total_time=total_time,
                 eval_summary=EvalSummary(
                     **summary,
                     mismatched=mismatched,

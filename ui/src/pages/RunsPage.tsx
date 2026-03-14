@@ -102,7 +102,7 @@ export function RunsPage() {
                 <th className="px-3 py-2">task_id</th>
                 <th className="px-3 py-2">item_count</th>
                 <th className="px-3 py-2">ok_count</th>
-                <th className="px-3 py-2">error_count</th>
+                <th className="px-3 py-2">time</th>
                 <th className="px-3 py-2">mismatched</th>
 
               </tr>
@@ -131,7 +131,7 @@ export function RunsPage() {
                   <td className="px-3 py-2">{String(row.task_id ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.item_count ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.ok_count ?? "-")}</td>
-                  <td className="px-3 py-2">{String(row.error_count ?? "-")}</td>
+                  <td className="px-3 py-2">{String(row.total_time ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.eval_summary?.mismatched ?? "n/a")}</td>
                 </tr>
               ))}
