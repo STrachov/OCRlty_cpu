@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_scopes
 from app.auth_store import ApiPrincipal
-from app.handlers import list_task_summaries
+from app.services.task_registry import list_task_summaries
 from app.schemas.api_error import common_error_responses
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])

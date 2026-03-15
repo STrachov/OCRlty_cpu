@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from app.auth_store import ApiPrincipal
 from app.services.artifacts import artifact_ref_from_rel, find_artifact_path, find_batch_artifact_path, read_artifact_json
 from app.services.ground_truths_store import GroundTruthRecord, GroundTruthsStore
+from app.services.schema_canonicalization import canonicalize_value_for_schema
 from app.services.s3_service import (
     s3_delete_object,
     s3_enabled,
@@ -18,6 +19,7 @@ from app.services.s3_service import (
     s3_put_bytes,
     s3_put_bytes_overwrite,
 )
+from app.services.task_registry import get_task
 
 
 def _utc_now_iso() -> str:
@@ -140,6 +142,9 @@ def create_ground_truth_from_content(
 
 def _build_gt_records_from_run(batch_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
+    task_id = str(batch_obj.get("task_id") or "").strip()
+    task = get_task(task_id) if task_id else None
+    root_schema = task.get("schema_value") if isinstance(task, dict) else None
     items = batch_obj.get("items") if isinstance(batch_obj.get("items"), list) else []
     for item in items:
         if not isinstance(item, dict):
@@ -162,9 +167,16 @@ def _build_gt_records_from_run(batch_obj: Dict[str, Any]) -> List[Dict[str, Any]
             parsed = extract_obj.get("parsed") if isinstance(extract_obj, dict) else None
         if not file_name or not isinstance(parsed, dict):
             continue
+        normalized_payload = (
+            canonicalize_value_for_schema(parsed, root_schema, root_schema=root_schema)
+            if isinstance(root_schema, dict)
+            else parsed
+        )
+        if not isinstance(normalized_payload, dict):
+            normalized_payload = parsed
         records.append({
             "file": file_name,
-            **parsed,
+            **normalized_payload,
         })
     if not records:
         raise HTTPException(status_code=400, detail="Run has no parsed items suitable for ground truth creation.")

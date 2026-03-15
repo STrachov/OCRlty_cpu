@@ -4,14 +4,11 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
-import os
 import re
 import sys
-import unicodedata
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -37,6 +34,13 @@ from app.services.s3_service import s3_enabled
 from app.services.ground_truths_service import load_ground_truth_json
 from app.services.ground_truths_store import GroundTruthsStore
 from app.services.runtime_config import get_bool, get_str
+from app.services.schema_canonicalization import (
+    canon_x_count,
+    canon_x_money,
+    canon_x_string,
+    get_decimal_sep as _get_decimal_sep,
+)
+from app.services.task_registry import get_task as _get_task, list_task_summaries, load_tasks
 
 
 # Load .env for local development convenience.
@@ -44,8 +48,6 @@ from app.services.runtime_config import get_bool, get_str
 load_dotenv(override=False)
 
 APP_ROOT = Path(__file__).resolve().parent
-SCHEMAS_DIR = APP_ROOT / "schemas"
-PROMPTS_DIR = APP_ROOT / "prompts"
 
 # Data root for server-side batch runs.
 # By convention in this repo: <repo_root>/data
@@ -170,78 +172,6 @@ def _ctx_request_id() -> str:
 
 def _log_event(level: int, event: str, **fields: Any) -> None:
     LOG.log(level, event, extra={"event": event, **fields})
-
-
-# ---------------------------
-# Tasks registry
-# ---------------------------
-TASK_SPECS = [
-    {
-        "task_id": "receipt_fields_v1",
-        "prompt_file": "receipt_fields_v1.txt",
-        "schema_file": "receipt_fields_v1.schema.json",
-        "description": "Extracts receipt-level monetary totals and payment fields as raw printed strings.",
-    },
-    {
-        "task_id": "items_light_v1",
-        "prompt_file": "items_light_v1.txt",
-        "schema_file": "items_light_v1.schema.json",
-        "description": "Extracts purchased line items with raw quantity, unit price, and line total values.",
-    },
-
-]
-_TASKS: Dict[str, Dict[str, Any]] = {}
-_TASK_LOAD_ERRORS: List[str] = []
-
-
-def load_tasks() -> None:
-    global _TASKS, _TASK_LOAD_ERRORS
-    _TASKS = {}
-    _TASK_LOAD_ERRORS = []
-
-    for spec in TASK_SPECS:
-        task_id = spec["task_id"]
-        try:
-            prompt_path = (PROMPTS_DIR / spec["prompt_file"]).resolve()
-            schema_path = (SCHEMAS_DIR / spec["schema_file"]).resolve()
-            prompt_value = prompt_path.read_text(encoding="utf-8")
-            schema_value = json.loads(schema_path.read_text(encoding="utf-8"))
-            if not isinstance(schema_value, dict):
-                raise ValueError("schema JSON must be an object")
-            _TASKS[task_id] = {
-                "task_id": task_id,
-                "description": str(spec.get("description") or ""),
-                "prompt_path": str(prompt_path),
-                "schema_path": str(schema_path),
-                "prompt_value": prompt_value,
-                "schema_value": schema_value,
-            }
-        except Exception as e:
-            _TASK_LOAD_ERRORS.append(f"{task_id}: {e}")
-
-
-def _get_task(task_id: str) -> Dict[str, Any]:
-    if not _TASKS:
-        load_tasks()
-    task = _TASKS.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Unknown task_id: {task_id!r}. Available: {sorted(_TASKS.keys())}")
-    if _TASK_LOAD_ERRORS:
-        # Still allow requests, but expose the errors for easier debugging.
-        _log_event(logging.WARNING, "task_load_errors", errors=_TASK_LOAD_ERRORS)
-    return task
-
-
-def list_task_summaries() -> List[Dict[str, str]]:
-    if not _TASKS:
-        load_tasks()
-    return [
-        {
-            "task_id": task_id,
-            "description": str((_TASKS.get(task_id) or {}).get("description") or ""),
-        }
-        for task_id in sorted(_TASKS.keys())
-    ]
 
 
 # ---------------------------
@@ -389,118 +319,6 @@ def _json_type(v: Any) -> str:
     if isinstance(v, dict):
         return "object"
     return "unknown"
-
-
-def canon_x_string(v: Any, *, str_mode: str = "exact") -> Tuple[bool, str, Optional[str]]:
-    if v is None:
-        return True, "", None
-    if isinstance(v, (int, float, bool)):
-        s = str(v)
-    else:
-        s = str(v)
-
-    if str_mode == "strip":
-        s = s.strip()
-    elif str_mode == "strip_collapse":
-        s = " ".join(s.strip().split())
-
-    return True, s, None
-
-
-def _get_decimal_sep() -> str:
-    # used in money/count canonicalization (can be configured)
-    return str(getattr(settings, "DECIMAL_SEP", ".") or ".").strip()[:1] or "."
-
-
-def _normalize_grouped_integer(integer_part: str, *, group_sep: str) -> Tuple[bool, Optional[str], Optional[str]]:
-    if not integer_part:
-        return True, "0", None
-    if group_sep not in integer_part:
-        return (True, integer_part, None) if integer_part.isdigit() else (False, None, "invalid digits")
-
-    groups = integer_part.split(group_sep)
-    if not groups or any(not g for g in groups):
-        return False, None, "invalid grouping"
-    if not groups[0].isdigit() or len(groups[0]) > 3:
-        return False, None, "invalid grouping"
-    for g in groups[1:]:
-        if not g.isdigit() or len(g) != 3:
-            return False, None, "invalid grouping"
-    return True, "".join(groups), None
-
-
-def _canon_numeric_string(
-    v: Any,
-    *,
-    decimal_sep: Optional[str],
-    allow_fraction: bool,
-    label: str,
-) -> Tuple[bool, Optional[str], Optional[str]]:
-    if v is None:
-        return True, None, None
-    s = str(v).strip()
-    if not s:
-        return True, None, None
-
-    dec = (decimal_sep or _get_decimal_sep()).strip()[:1] or "."
-    grp = "," if dec == "." else "."
-    s = s.replace(" ", "").replace("\u00a0", "")
-    # remove common currency/letter noise but keep numeric separators/sign
-    s = re.sub(r"[^0-9,\.\-]+", "", s)
-    if s in {"", "-", dec, f"-{dec}"}:
-        return False, None, f"{label}: cannot parse"
-
-    negative = s.startswith("-")
-    body = s[1:] if negative else s
-    if "-" in body:
-        return False, None, f"{label}: cannot parse"
-    if body.count(dec) > 1:
-        return False, None, f"{label}: cannot parse"
-
-    if dec in body:
-        integer_part, fraction_part = body.split(dec, 1)
-    else:
-        integer_part, fraction_part = body, ""
-
-    if grp in fraction_part:
-        return False, None, f"{label}: invalid grouping"
-
-    ok_int, normalized_int, int_err = _normalize_grouped_integer(integer_part, group_sep=grp)
-    if not ok_int or normalized_int is None:
-        return False, None, f"{label}: {int_err or 'cannot parse'}"
-
-    if fraction_part and not fraction_part.isdigit():
-        return False, None, f"{label}: cannot parse"
-
-    if not allow_fraction:
-        if fraction_part.strip("0"):
-            return False, None, f"{label}: fractional part is not allowed"
-        fraction_part = ""
-
-    normalized_int = normalized_int.lstrip("0") or "0"
-    normalized = normalized_int
-    if fraction_part:
-        normalized_fraction = fraction_part.rstrip("0")
-        if normalized_fraction:
-            normalized = f"{normalized_int}.{normalized_fraction}"
-
-    if negative and normalized != "0":
-        normalized = f"-{normalized}"
-
-    try:
-        # Validate final canonical representation without changing scale.
-        Decimal(normalized)
-    except InvalidOperation:
-        return False, None, f"{label}: cannot parse"
-    return True, normalized, None
-
-
-def canon_x_money(v: Any, *, decimal_sep: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
-    return _canon_numeric_string(v, decimal_sep=decimal_sep, allow_fraction=True, label="x-money")
-
-
-def canon_x_count(v: Any, *, decimal_sep: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
-    return _canon_numeric_string(v, decimal_sep=decimal_sep, allow_fraction=False, label="x-count")
 
 
 def _deref_schema(schema: Dict[str, Any], *, root_schema: Dict[str, Any]) -> Dict[str, Any]:

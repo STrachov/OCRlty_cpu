@@ -37,10 +37,10 @@ from app.services.artifacts import (
 )
 from app.services.s3_service import s3_enabled, s3_get_bytes, s3_key, s3_put_bytes, s3_put_json, s3_put_json_overwrite
 from app.services.runtime_config import get_bool, get_float, get_int, get_str
+from app.services.task_registry import get_task as _get_task
 
 from app.handlers import (
     _ctx_request_id,
-    _get_task,
     _log_event,
     _reset_request_id,
     _set_request_id,

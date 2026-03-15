@@ -17,8 +17,9 @@ from app.routers.tasks import router as tasks_router
 from app.routers.ground_truths import router as ground_truths_router
 from app.routers.admin_runtime_settings import router as admin_runtime_settings_router
 from app.error_handlers import register_error_handlers
-from app.handlers import make_request_id, REQUEST_ID_CTX, setup_logging, load_tasks
+from app.handlers import make_request_id, REQUEST_ID_CTX, setup_logging
 from app.services.artifacts import artifact_index_init
+from app.services.task_registry import load_tasks
 
 import httpx
 from app.vllm_client import VLLMClient
