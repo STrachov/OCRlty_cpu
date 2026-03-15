@@ -572,6 +572,37 @@ def _apply_debug_overrides(
     return prompt_text, temperature, max_tokens, schema_json
 
 
+def _compute_prompt_schema_hashes(*, prompt_text: str, schema_json: Dict[str, Any]) -> Tuple[str, str]:
+    prompt_sha = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+    schema_sha = hashlib.sha256(
+        json.dumps(schema_json, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return prompt_sha, schema_sha
+
+
+def _resolve_code_version() -> str:
+    code_version = str(getattr(settings, "CODE_VERSION", "") or "").strip()
+    return code_version or "unknown"
+
+
+def _build_inference_artifact_meta(
+    *,
+    prompt_text: str,
+    schema_json: Dict[str, Any],
+    temperature: float,
+    max_tokens: int,
+) -> Dict[str, Any]:
+    prompt_sha, schema_sha = _compute_prompt_schema_hashes(prompt_text=prompt_text, schema_json=schema_json)
+    return {
+        "model_id": get_str("VLLM_MODEL", settings.VLLM_MODEL),
+        "prompt_sha256": prompt_sha,
+        "schema_sha256": schema_sha,
+        "temperature": temperature,
+        "max_tokens": int(max_tokens),
+        "code_version": _resolve_code_version(),
+    }
+
+
 async def extract(
     req: ExtractRequest,
     *,
@@ -600,10 +631,15 @@ async def extract(
         base_schema_json=task["schema_value"],
         debug=req.debug,
     )
-
-    prompt_sha = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
-    schema_sha = hashlib.sha256(json.dumps(schema_json, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-    model_id = get_str("VLLM_MODEL", settings.VLLM_MODEL)
+    inference_artifact_meta = _build_inference_artifact_meta(
+        prompt_text=prompt_text,
+        schema_json=schema_json,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    prompt_sha = str(inference_artifact_meta["prompt_sha256"])
+    schema_sha = str(inference_artifact_meta["schema_sha256"])
+    model_id = str(inference_artifact_meta["model_id"])
 
     # Resolve image input
     mime_type = (req.mime_type or "image/jpeg").strip() or "image/jpeg"
@@ -637,9 +673,7 @@ async def extract(
         "task_id": req.task_id,
         "auth": {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))},
         "input": _sanitize_input_for_artifact(req),
-        "model_id": model_id,
-        "prompt_sha256": prompt_sha,
-        "schema_sha256": schema_sha,
+        **inference_artifact_meta,
     }
 
     attempt = 1
@@ -1003,6 +1037,7 @@ async def _run_batch_extract_core(
     limit: Optional[int] = None,
     progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> BatchExtractResponse:
+    task = _get_task(task_id)
     # Optional limit for huge batches
     if limit is not None:
         inputs = inputs[: int(limit)]
@@ -1136,6 +1171,18 @@ async def _run_batch_extract_core(
 
     created_at = _now_utc_s()
     batch_total_ms = int(round((time.monotonic() - t_batch0) * 1000))
+    prompt_text, temperature, max_tokens, schema_json = _apply_debug_overrides(
+        principal,
+        base_prompt_text=task["prompt_value"],
+        base_schema_json=task["schema_value"],
+        debug=None,
+    )
+    batch_inference_meta = _build_inference_artifact_meta(
+        prompt_text=prompt_text,
+        schema_json=schema_json,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
     batch_payload: Dict[str, Any] = {
         "run_id": run_id,
@@ -1150,6 +1197,7 @@ async def _run_batch_extract_core(
         "error_count": err_count,
         "items": [it.model_dump() for it in items],
         "auth": {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))},
+        **batch_inference_meta,
     }
 
     await _emit_progress(stage="finalizing", force=True)

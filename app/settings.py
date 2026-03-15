@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     ARTIFACTS_DIR: str = "/data/artifacts"
+    CODE_VERSION: str = ""
 
     VLLM_MODEL: str = "Qwen/Qwen3-VL-8B-Instruct"
     VLLM_BASE_URL: str = "http://127.0.0.1:8000"
