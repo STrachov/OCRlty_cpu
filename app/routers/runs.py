@@ -59,6 +59,17 @@ class RunsListResponse(BaseModel):
     next_cursor: Optional[str] = None
 
 
+class RunCatalogItem(BaseModel):
+    run_id: str
+    created_at: Optional[str] = None
+
+
+class RunCatalogResponse(BaseModel):
+    items: List[RunCatalogItem] = Field(default_factory=list)
+    limit: int
+    next_cursor: Optional[str] = None
+
+
 class DeleteRunResponse(BaseModel):
     ok: bool
     run_id: str
@@ -142,6 +153,41 @@ def _jobs_store(request: Request) -> JobsStore:
     if store is None:
         raise HTTPException(status_code=500, detail="Jobs store is not initialized.")
     return store
+
+
+@router.get(
+    "/catalog",
+    response_model=RunCatalogResponse,
+    responses=_ERR,
+)
+async def list_runs_catalog(
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor: Optional[str] = Query(default=None),
+) -> RunCatalogResponse:
+    cursor_created_at: Optional[str] = None
+    cursor_run_id: Optional[str] = None
+    if cursor:
+        cursor_created_at, cursor_run_id = _decode_cursor(cursor)
+
+    owner_filter = None if principal.role == "admin" else principal.key_id
+    rows, next_cur = list_batch_artifacts(
+        limit=limit,
+        owner_key_id=owner_filter,
+        cursor_created_at=cursor_created_at,
+        cursor_run_id=cursor_run_id,
+    )
+
+    items = [
+        RunCatalogItem(
+            run_id=str(r.get("artifact_id") or ""),
+            created_at=str(r.get("created_at") or "") or None,
+        )
+        for r in rows
+        if str(r.get("artifact_id") or "")
+    ]
+    next_cursor = _encode_cursor(next_cur[0], next_cur[1]) if next_cur else None
+    return RunCatalogResponse(items=items, limit=limit, next_cursor=next_cursor)
 
 
 @router.get(

@@ -72,6 +72,24 @@ export function Breadcrumbs() {
     );
   }
 
+  if (location.pathname === "/ground-truths") {
+    return (
+      <div className="flex items-center gap-2">
+        <CrumbCurrent label="Ground Truths" />
+      </div>
+    );
+  }
+
+  if (location.pathname === "/ground-truths/new") {
+    return (
+      <div className="flex items-center gap-2">
+        <CrumbLink to="/ground-truths" label="Ground Truths" />
+        <Sep />
+        <CrumbCurrent label="New" />
+      </div>
+    );
+  }
+
   if (location.pathname.startsWith("/runs/") && run_id) {
     return (
       <div className="flex items-center gap-2">

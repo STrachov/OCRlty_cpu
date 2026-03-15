@@ -712,7 +712,9 @@ async def eval_batch_vs_gt(
     gt_store = GroundTruthsStore(settings.DATABASE_URL)
     gt_meta, gt_obj = load_ground_truth_json(store=gt_store, principal=principal, gt_id=req.gt_id)
 
-    if isinstance(gt_obj, dict):
+    if isinstance(gt_obj, dict) and isinstance(gt_obj.get("items"), list):
+        gt_records = gt_obj.get("items") or []
+    elif isinstance(gt_obj, dict):
         gt_records = list(gt_obj.values())
     elif isinstance(gt_obj, list):
         gt_records = gt_obj

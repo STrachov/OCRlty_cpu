@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 export function LeftSidebar() {
   const location = useLocation();
   const isRuns = location.pathname.startsWith("/runs");
+  const isGroundTruths = location.pathname.startsWith("/ground-truths");
   const isSettings = location.pathname.startsWith("/settings");
 
   const baseItem = "block rounded px-3 py-2 text-sm";
@@ -16,6 +17,9 @@ export function LeftSidebar() {
         <div className="space-y-1">
           <Link to="/runs" className={`${baseItem} ${isRuns ? activeItem : idleItem}`}>
             Runs
+          </Link>
+          <Link to="/ground-truths" className={`${baseItem} ${isGroundTruths ? activeItem : idleItem}`}>
+            Ground Truths
           </Link>
           <Link to="/settings" className={`${baseItem} ${isSettings ? activeItem : idleItem}`}>
             Settings

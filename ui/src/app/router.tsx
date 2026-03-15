@@ -7,6 +7,8 @@ import { RunsPage } from "../pages/RunsPage";
 import { RunDetailsPage } from "../pages/RunDetailsPage";
 import { ItemPage } from "../pages/ItemPage";
 import { SettingsPage } from "../pages/SettingsPage";
+import { GroundTruthsPage } from "../pages/GroundTruthsPage";
+import { CreateGroundTruthPage } from "../pages/CreateGroundTruthPage";
 import { AppLayout } from "../layout/AppLayout";
 
 function DefaultRedirect() {
@@ -23,6 +25,8 @@ export function AppRouter() {
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/runs/new" element={<CreateRunPage />} />
             <Route path="/runs/:run_id" element={<RunDetailsPage />} />
+            <Route path="/ground-truths" element={<GroundTruthsPage />} />
+            <Route path="/ground-truths/new" element={<CreateGroundTruthPage />} />
             <Route path="/items/:request_id" element={<ItemPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>

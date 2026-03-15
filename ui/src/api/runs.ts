@@ -4,11 +4,13 @@ import type {
   DeleteRunResponse,
   EvalArtifact,
   ExtractArtifact,
+  GroundTruthFromRunRequest,
   GroundTruthListResponse,
   GroundTruthView,
   JobCreateResponse,
   JobView,
   MeResponse,
+  RunCatalogResponse,
   RuntimeSettingItem,
   RuntimeSettingsResponse,
   RunsListResponse,
@@ -46,6 +48,15 @@ export async function listRuns(limit: number, cursor?: string, taskId?: string):
     query.set("task_id", taskId);
   }
   const { data } = await fetchJson<RunsListResponse>(`/v1/runs?${query.toString()}`);
+  return data;
+}
+
+export async function listRunsCatalog(limit: number, cursor?: string): Promise<RunCatalogResponse> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+  const { data } = await fetchJson<RunCatalogResponse>(`/v1/runs/catalog?${query.toString()}`);
   return data;
 }
 
@@ -92,6 +103,14 @@ export async function uploadGroundTruth(file: File): Promise<GroundTruthView> {
   const { data } = await fetchJson<GroundTruthView>("/v1/ground_truths/upload", {
     method: "POST",
     body: formData,
+  });
+  return data;
+}
+
+export async function createGroundTruthFromRun(payload: GroundTruthFromRunRequest): Promise<GroundTruthView> {
+  const { data } = await fetchJson<GroundTruthView>("/v1/ground_truths/from_run", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
   return data;
 }

@@ -172,27 +172,35 @@ export function RunDetailsPage() {
       {!runQuery.isError && !runQuery.isLoading ? (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white p-4">
-            <p className="text-sm text-slate-600">
-              Full delete removes the run artifact, related item/eval artifacts, and related terminal jobs.
-            </p>
-            {canDeleteRun ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (!run_id) {
-                    return;
-                  }
-                  if (!window.confirm(`Delete run ${run_id}? This cannot be undone.`)) {
-                    return;
-                  }
-                  deleteRunMutation.mutate();
-                }}
-                disabled={deleteRunMutation.isPending}
-                className="rounded border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-900 hover:bg-rose-100 disabled:opacity-60"
-              >
-                {deleteRunMutation.isPending ? "Deleting..." : "Delete run"}
-              </button>
-            ) : null}
+            <p className="text-sm text-slate-600">Use this run as the source for inspection, GT creation, or deletion.</p>
+            <div className="flex flex-wrap items-center gap-2">
+              {run_id ? (
+                <Link
+                  to={`/ground-truths/new?source_run_id=${encodeURIComponent(run_id)}`}
+                  className="rounded border border-slate-300 bg-white px-4 py-2 text-sm hover:bg-slate-100"
+                >
+                  Create GT
+                </Link>
+              ) : null}
+              {canDeleteRun ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!run_id) {
+                      return;
+                    }
+                    if (!window.confirm(`Delete run ${run_id}? This cannot be undone.`)) {
+                      return;
+                    }
+                    deleteRunMutation.mutate();
+                  }}
+                  disabled={deleteRunMutation.isPending}
+                  className="rounded border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-900 hover:bg-rose-100 disabled:opacity-60"
+                >
+                  {deleteRunMutation.isPending ? "Deleting..." : "Delete run"}
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {deleteRunMutation.isError ? <ErrorPanel error={deleteRunMutation.error} /> : null}

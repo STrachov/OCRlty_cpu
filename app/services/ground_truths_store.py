@@ -21,6 +21,10 @@ class GroundTruthRecord:
     name: str
     s3_rel: str
     created_at: str
+    task_id: Optional[str]
+    source_type: Optional[str]
+    source_run_id: Optional[str]
+    updated_at: Optional[str]
 
 
 class GroundTruthsStore:
@@ -74,6 +78,11 @@ class GroundTruthsStore:
                 raise RuntimeError(
                     "Table 'ground_truth_files' is missing. Run migrations first: alembic upgrade head"
                 )
+            self._execute(conn, "ALTER TABLE ground_truth_files ADD COLUMN IF NOT EXISTS task_id TEXT;")
+            self._execute(conn, "ALTER TABLE ground_truth_files ADD COLUMN IF NOT EXISTS source_type TEXT;")
+            self._execute(conn, "ALTER TABLE ground_truth_files ADD COLUMN IF NOT EXISTS source_run_id TEXT;")
+            self._execute(conn, "ALTER TABLE ground_truth_files ADD COLUMN IF NOT EXISTS updated_at TEXT;")
+            conn.commit()
 
     def ensure_init(self) -> None:
         if self._initialized:
@@ -91,6 +100,10 @@ class GroundTruthsStore:
             name=str(row["name"]),
             s3_rel=str(row["s3_rel"]),
             created_at=str(row["created_at"]),
+            task_id=str(row["task_id"]) if row.get("task_id") else None,
+            source_type=str(row["source_type"]) if row.get("source_type") else None,
+            source_run_id=str(row["source_run_id"]) if row.get("source_run_id") else None,
+            updated_at=str(row["updated_at"]) if row.get("updated_at") else None,
         )
 
     def create_ground_truth(
@@ -101,20 +114,46 @@ class GroundTruthsStore:
         name: str,
         s3_rel: str,
         created_at: str,
+        task_id: Optional[str] = None,
+        source_type: Optional[str] = None,
+        source_run_id: Optional[str] = None,
+        updated_at: Optional[str] = None,
     ) -> GroundTruthRecord:
         self.ensure_init()
         with self._connect() as conn:
             self._execute(
                 conn,
                 """
-                INSERT INTO ground_truth_files (gt_id, owner_key_id, name, s3_rel, created_at)
-                VALUES (%s, %s, %s, %s, %s);
+                INSERT INTO ground_truth_files (
+                    gt_id, owner_key_id, name, s3_rel, created_at, task_id, source_type, source_run_id, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """,
-                (gt_id, owner_key_id, name, s3_rel, created_at),
+                (gt_id, owner_key_id, name, s3_rel, created_at, task_id, source_type, source_run_id, updated_at),
             )
             conn.commit()
             row = self._fetchone(conn, "SELECT * FROM ground_truth_files WHERE gt_id = %s LIMIT 1;", (gt_id,))
             assert row is not None
+            return self._row_to_record(row)
+
+    def update_ground_truth(
+        self,
+        *,
+        gt_id: str,
+        name: str,
+        updated_at: str,
+    ) -> GroundTruthRecord:
+        self.ensure_init()
+        with self._connect() as conn:
+            self._execute(
+                conn,
+                "UPDATE ground_truth_files SET name = %s, updated_at = %s WHERE gt_id = %s;",
+                (name, updated_at, gt_id),
+            )
+            conn.commit()
+            row = self._fetchone(conn, "SELECT * FROM ground_truth_files WHERE gt_id = %s LIMIT 1;", (gt_id,))
+            if row is None:
+                raise RuntimeError("Ground truth update failed.")
             return self._row_to_record(row)
 
     def get_ground_truth(self, gt_id: str) -> Optional[GroundTruthRecord]:

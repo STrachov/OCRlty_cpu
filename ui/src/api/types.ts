@@ -45,10 +45,30 @@ export type GroundTruthView = {
   gt_id: string;
   name: string;
   created_at: string;
+  task_id?: string | null;
+  source_type?: string | null;
+  source_run_id?: string | null;
+  updated_at?: string | null;
 };
 
 export type GroundTruthListResponse = {
   items: GroundTruthView[];
+};
+
+export type GroundTruthFromRunRequest = {
+  run_id: string;
+  name?: string;
+};
+
+export type RunCatalogItem = {
+  run_id: string;
+  created_at?: string | null;
+};
+
+export type RunCatalogResponse = {
+  items: RunCatalogItem[];
+  limit: number;
+  next_cursor: string | null;
 };
 
 export type EvalSummary = {
