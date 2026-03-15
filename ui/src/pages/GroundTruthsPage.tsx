@@ -1,9 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { getMe, listGroundTruths } from "../api/runs";
+import { deleteGroundTruth, getMe, listGroundTruths } from "../api/runs";
 import { ErrorPanel } from "../components/ErrorPanel";
 
 export function GroundTruthsPage() {
+  const queryClient = useQueryClient();
   const meQuery = useQuery({
     queryKey: ["me"],
     queryFn: getMe,
@@ -15,6 +16,23 @@ export function GroundTruthsPage() {
     queryFn: () => listGroundTruths(100, 0),
     enabled: canUseGroundTruths,
   });
+  const deleteMutation = useMutation({
+    mutationFn: deleteGroundTruth,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["ground_truths"] });
+    },
+  });
+
+  function handleDelete(gtId: string) {
+    if (deleteMutation.isPending) {
+      return;
+    }
+    const confirmed = window.confirm(`Delete ground truth ${gtId} permanently?`);
+    if (!confirmed) {
+      return;
+    }
+    deleteMutation.mutate(gtId);
+  }
 
   return (
     <section className="space-y-4">
@@ -35,6 +53,7 @@ export function GroundTruthsPage() {
 
       {meQuery.isError ? <ErrorPanel error={meQuery.error} /> : null}
       {groundTruthsQuery.isError ? <ErrorPanel error={groundTruthsQuery.error} /> : null}
+      {deleteMutation.isError ? <ErrorPanel error={deleteMutation.error} /> : null}
 
       {!canUseGroundTruths && meQuery.data ? (
         <div className="rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-600">
@@ -54,6 +73,7 @@ export function GroundTruthsPage() {
                 <th className="px-3 py-2">source</th>
                 <th className="px-3 py-2">source_run_id</th>
                 <th className="px-3 py-2">updated_at</th>
+                <th className="px-3 py-2 text-right">actions</th>
               </tr>
             </thead>
             <tbody>
@@ -74,11 +94,21 @@ export function GroundTruthsPage() {
                   <td className="px-3 py-2">{String(item.source_type ?? "-")}</td>
                   <td className="px-3 py-2 font-mono text-xs">{String(item.source_run_id ?? "-")}</td>
                   <td className="px-3 py-2">{String(item.updated_at ?? "-")}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(item.gt_id)}
+                      disabled={deleteMutation.isPending}
+                      className="rounded border border-red-200 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {deleteMutation.isPending ? "Deleting..." : "Delete"}
+                    </button>
+                  </td>
                 </tr>
               ))}
               {(groundTruthsQuery.data?.items ?? []).length === 0 && !groundTruthsQuery.isLoading ? (
                 <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                  <td colSpan={8} className="px-3 py-6 text-center text-slate-500">
                     No ground truths found.
                   </td>
                 </tr>

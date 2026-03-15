@@ -55,6 +55,11 @@ export type GroundTruthListResponse = {
   items: GroundTruthView[];
 };
 
+export type DeleteGroundTruthResponse = {
+  ok: boolean;
+  gt_id: string;
+};
+
 export type GroundTruthFromRunRequest = {
   run_id: string;
   name?: string;

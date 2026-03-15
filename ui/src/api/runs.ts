@@ -1,6 +1,7 @@
 import { fetchJson } from "./client";
 import type {
   BatchArtifact,
+  DeleteGroundTruthResponse,
   DeleteRunResponse,
   EvalArtifact,
   ExtractArtifact,
@@ -141,6 +142,13 @@ export async function updateGroundTruth(gtId: string, payload: GroundTruthUpdate
   const { data } = await fetchJson<GroundTruthView>(`/v1/ground_truths/${encodeURIComponent(gtId)}`, {
     method: "PUT",
     body: JSON.stringify(payload),
+  });
+  return data;
+}
+
+export async function deleteGroundTruth(gtId: string): Promise<DeleteGroundTruthResponse> {
+  const { data } = await fetchJson<DeleteGroundTruthResponse>(`/v1/ground_truths/${encodeURIComponent(gtId)}`, {
+    method: "DELETE",
   });
   return data;
 }

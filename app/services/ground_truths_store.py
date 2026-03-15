@@ -162,6 +162,13 @@ class GroundTruthsStore:
             row = self._fetchone(conn, "SELECT * FROM ground_truth_files WHERE gt_id = %s LIMIT 1;", (gt_id,))
             return self._row_to_record(row) if row else None
 
+    def delete_ground_truth(self, gt_id: str) -> bool:
+        self.ensure_init()
+        with self._connect() as conn:
+            cur = self._execute(conn, "DELETE FROM ground_truth_files WHERE gt_id = %s;", (gt_id,))
+            conn.commit()
+            return int(getattr(cur, "rowcount", 0) or 0) > 0
+
     def list_ground_truths(
         self,
         *,

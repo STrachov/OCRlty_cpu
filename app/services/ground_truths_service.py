@@ -10,7 +10,14 @@ from fastapi import HTTPException
 from app.auth_store import ApiPrincipal
 from app.services.artifacts import artifact_ref_from_rel, find_artifact_path, find_batch_artifact_path, read_artifact_json
 from app.services.ground_truths_store import GroundTruthRecord, GroundTruthsStore
-from app.services.s3_service import s3_enabled, s3_get_json, s3_key, s3_put_bytes, s3_put_bytes_overwrite
+from app.services.s3_service import (
+    s3_delete_object,
+    s3_enabled,
+    s3_get_json,
+    s3_key,
+    s3_put_bytes,
+    s3_put_bytes_overwrite,
+)
 
 
 def _utc_now_iso() -> str:
@@ -335,3 +342,17 @@ def load_ground_truth_json(
     if not isinstance(obj, (dict, list)):
         raise HTTPException(status_code=500, detail="Ground truth JSON must be an object or an array.")
     return rec, obj
+
+
+def delete_ground_truth_for_principal(
+    *,
+    store: GroundTruthsStore,
+    principal: ApiPrincipal,
+    gt_id: str,
+) -> GroundTruthRecord:
+    if not s3_enabled():
+        raise HTTPException(status_code=501, detail="S3 is not enabled.")
+    rec = get_ground_truth_for_principal(store=store, principal=principal, gt_id=gt_id)
+    s3_delete_object(s3_key(rec.s3_rel))
+    store.delete_ground_truth(gt_id)
+    return rec

@@ -13,6 +13,7 @@ from app.services.ground_truths_service import (
     create_ground_truth_from_content,
     create_ground_truth_from_run,
     create_ground_truth_from_upload,
+    delete_ground_truth_for_principal,
     get_ground_truth_for_principal,
     load_ground_truth_json,
     list_ground_truths_for_principal,
@@ -70,6 +71,11 @@ class GroundTruthUpdateRequest(BaseModel):
 class GroundTruthCreateRequest(BaseModel):
     name: str
     content: Any
+
+
+class DeleteGroundTruthResponse(BaseModel):
+    ok: bool
+    gt_id: str
 
 
 @router.post(
@@ -223,3 +229,19 @@ async def update_ground_truth(
         payload=body.content,
     )
     return _to_view(rec)
+
+
+@router.delete(
+    "/{gt_id}",
+    response_model=DeleteGroundTruthResponse,
+    responses=_ERR,
+    dependencies=[Depends(require_scopes(["debug:run"]))],
+)
+async def delete_ground_truth(
+    gt_id: str,
+    request: Request,
+    principal: ApiPrincipal = Depends(require_scopes(["debug:run"])),
+) -> DeleteGroundTruthResponse:
+    store = _store(request)
+    rec = delete_ground_truth_for_principal(store=store, principal=principal, gt_id=gt_id)
+    return DeleteGroundTruthResponse(ok=True, gt_id=rec.gt_id)
