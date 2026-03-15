@@ -81,6 +81,16 @@ export type RunsListResponse = {
   next_cursor: string | null;
 };
 
+export type DeleteRunResponse = {
+  ok: boolean;
+  run_id: string;
+  deleted_extracts: number;
+  deleted_evals: number;
+  deleted_job_results: number;
+  deleted_job_errors: number;
+  deleted_jobs: number;
+};
+
 export type JobCreateResponse = {
   job_id: string;
   status: string;

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.auth import require_scopes
@@ -11,11 +11,14 @@ from app.schemas.api_error import common_error_responses
 from app.handlers import _validate_request_id_for_fs
 from app.services.artifacts import (
     artifact_ref_from_rel,
+    delete_indexed_artifact,
+    delete_run_artifacts,
     find_artifact_path,
     find_batch_artifact_path,
     list_batch_artifacts,
     read_artifact_json,
 )
+from app.services.jobs_store import JobsStore
 from app.settings import settings
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
@@ -48,6 +51,16 @@ class RunsListResponse(BaseModel):
     items: List[RunSummary] = Field(default_factory=list)
     limit: int
     next_cursor: Optional[str] = None
+
+
+class DeleteRunResponse(BaseModel):
+    ok: bool
+    run_id: str
+    deleted_extracts: int = 0
+    deleted_evals: int = 0
+    deleted_job_results: int = 0
+    deleted_job_errors: int = 0
+    deleted_jobs: int = 0
 
 
 def _build_eval_summary(eval_obj: Any) -> Optional[EvalSummary]:
@@ -116,6 +129,13 @@ def _resolve_eval_owner_key_id(eval_obj: Dict[str, Any]) -> Optional[str]:
     batch_auth = batch_obj.get("auth") if isinstance(batch_obj.get("auth"), dict) else {}
     batch_owner_key_id = batch_auth.get("key_id") if isinstance(batch_auth, dict) else None
     return str(batch_owner_key_id) if batch_owner_key_id else None
+
+
+def _jobs_store(request: Request) -> JobsStore:
+    store = getattr(request.app.state, "jobs_store", None)
+    if store is None:
+        raise HTTPException(status_code=500, detail="Jobs store is not initialized.")
+    return store
 
 
 @router.get(
@@ -284,6 +304,63 @@ async def get_run(
     owner_key_id = auth.get("key_id") if isinstance(auth, dict) else None
     _ensure_owner_or_admin(principal, str(owner_key_id) if owner_key_id else None)
     return obj
+
+
+@router.delete(
+    "/{run_id}",
+    response_model=DeleteRunResponse,
+    responses=_ERR,
+)
+async def delete_run(
+    run_id: str,
+    request: Request,
+    principal: ApiPrincipal = Depends(require_scopes(["runs:delete"])),
+) -> DeleteRunResponse:
+    if (principal.role or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Only admin may delete runs.")
+
+    batch_ref = find_batch_artifact_path(run_id, date=None, max_days=3650)
+    if batch_ref is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    batch_obj = read_artifact_json(batch_ref)
+    if not isinstance(batch_obj, dict):
+        raise HTTPException(status_code=500, detail="Invalid run JSON.")
+
+    auth = batch_obj.get("auth") if isinstance(batch_obj.get("auth"), dict) else {}
+    owner_key_id = auth.get("key_id") if isinstance(auth, dict) else None
+    _ensure_owner_or_admin(principal, str(owner_key_id) if owner_key_id else None)
+
+    jobs_store = _jobs_store(request)
+    related_jobs = jobs_store.list_related_jobs(run_id)
+    active_jobs = [job.job_id for job in related_jobs if job.status in {"queued", "running"}]
+    if active_jobs:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete run while related jobs are active: {', '.join(active_jobs[:10])}",
+        )
+
+    deleted_job_results = 0
+    deleted_job_errors = 0
+    deleted_jobs = 0
+    for job in related_jobs:
+        if delete_indexed_artifact(kind="job_result", artifact_id=job.job_id, ref=job.result_ref):
+            deleted_job_results += 1
+        if delete_indexed_artifact(kind="job_error", artifact_id=job.job_id, ref=job.error_ref):
+            deleted_job_errors += 1
+        if jobs_store.delete_job(job.job_id):
+            deleted_jobs += 1
+
+    summary = delete_run_artifacts(run_id, max_days=3650)
+    return DeleteRunResponse(
+        ok=True,
+        run_id=run_id,
+        deleted_extracts=int(summary.get("deleted_extracts") or 0),
+        deleted_evals=int(summary.get("deleted_evals") or 0),
+        deleted_job_results=deleted_job_results,
+        deleted_job_errors=deleted_job_errors,
+        deleted_jobs=deleted_jobs,
+    )
 
 @router.get(
     "/item/{request_id}",

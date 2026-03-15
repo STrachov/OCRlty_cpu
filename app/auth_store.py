@@ -26,7 +26,7 @@ from app.settings import settings
 ROLE_PRESET_SCOPES: Dict[str, List[str]] = {
     "client": ["extract:run"],
     "debugger": ["extract:run", "debug:run"],
-    "admin": ["extract:run", "debug:run", "debug:read_raw"],
+    "admin": ["extract:run", "debug:run", "debug:read_raw", "runs:delete"],
 }
 
 
@@ -263,10 +263,13 @@ class AuthStore:
                 except Exception:
                     scopes_set = {s.strip() for s in scopes_raw.split(",") if s.strip()}
 
+            role = str(row["role"])
+            scopes_set.update(self.role_default_scopes(role))
+
             return ApiPrincipal(
                 api_key_id=int(row["api_key_id"]),
                 key_id=str(row["key_id"]),
-                role=str(row["role"]),
+                role=role,
                 scopes=scopes_set,
             )
 

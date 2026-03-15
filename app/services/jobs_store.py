@@ -271,6 +271,31 @@ class JobsStore:
             rows = self._fetchall(conn, q, tuple(args))
             return [self._row_to_record(r) for r in rows]
 
+    def list_related_jobs(self, run_id: str) -> List[JobRecord]:
+        self.ensure_init()
+        with self._connect() as conn:
+            rows = self._fetchall(
+                conn,
+                """
+                SELECT *
+                FROM jobs
+                WHERE COALESCE(request_json::jsonb ->> 'run_id', '') = %s
+                   OR COALESCE(request_json::jsonb ->> 'source_run_id', '') = %s
+                   OR COALESCE(request_json::jsonb ->> 'new_run_id', '') = %s
+                   OR COALESCE(result_meta_json::jsonb ->> 'run_id', '') = %s
+                ORDER BY created_at DESC;
+                """,
+                (run_id, run_id, run_id, run_id),
+            )
+            return [self._row_to_record(r) for r in rows]
+
+    def delete_job(self, job_id: str) -> bool:
+        self.ensure_init()
+        with self._connect() as conn:
+            cur = self._execute(conn, "DELETE FROM jobs WHERE job_id = %s;", (job_id,))
+            conn.commit()
+            return (cur.rowcount or 0) > 0
+
     def mark_running(self, job_id: str) -> None:
         self.ensure_init()
         now = _utc_now_iso()

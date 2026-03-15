@@ -27,6 +27,7 @@ from app.services.s3_service import (
     s3_put_json,
     s3_get_json,
     s3_exists,
+    s3_delete_object,
     s3_list_common_prefixes,
 )
 # Used only for converting full S3 key -> relative artifact_rel (strip prefix).
@@ -245,6 +246,45 @@ def _index_list(
         return []
 
 
+def _delete_local_file(path: Union[str, Path]) -> bool:
+    p = Path(path)
+    existed = p.exists()
+    try:
+        p.unlink(missing_ok=True)
+    except FileNotFoundError:
+        return False
+    except Exception:
+        raise
+
+    # Best-effort cleanup of empty day/kind directories under ARTIFACTS_DIR.
+    try:
+        parent = p.parent
+        while parent != ARTIFACTS_DIR and parent.is_relative_to(ARTIFACTS_DIR):
+            parent.rmdir()
+            parent = parent.parent
+    except Exception:
+        pass
+    return existed
+
+
+def delete_artifact_ref(ref: Union[str, Path]) -> bool:
+    if s3_enabled() and isinstance(ref, str) and not ref.startswith("/"):
+        return s3_delete_object(str(ref))
+    return _delete_local_file(ref)
+
+
+def delete_artifact_rel(rel: str) -> bool:
+    return delete_artifact_ref(artifact_ref_from_rel(rel))
+
+
+def delete_indexed_artifact(*, kind: str, artifact_id: str, ref: Optional[Union[str, Path]]) -> bool:
+    deleted = False
+    if ref is not None:
+        deleted = delete_artifact_ref(ref)
+    _index_delete(kind, artifact_id)
+    return deleted
+
+
 # ---------------------------
 # Save/load artifacts
 # ---------------------------
@@ -440,3 +480,56 @@ def list_batch_artifacts(
     page = rows[:lim]
     last = page[-1]
     return page, (str(last.get("created_at") or ""), str(last.get("artifact_id") or ""))
+
+
+def delete_run_artifacts(run_id: str, *, max_days: int = 3650) -> Dict[str, Any]:
+    batch_ref = find_batch_artifact_path(run_id, date=None, max_days=max_days)
+    if batch_ref is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    batch_obj = read_artifact_json(batch_ref)
+    if not isinstance(batch_obj, dict):
+        raise HTTPException(status_code=500, detail="Invalid run JSON.")
+
+    deleted_extracts = 0
+    deleted_evals = 0
+    seen_request_ids: set[str] = set()
+    seen_eval_ids: set[str] = set()
+
+    items = batch_obj.get("items") if isinstance(batch_obj.get("items"), list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        request_id = str(item.get("request_id") or "").strip()
+        if not request_id or request_id in seen_request_ids:
+            continue
+        seen_request_ids.add(request_id)
+
+        artifact_rel = str(item.get("artifact_rel") or "").strip()
+        item_ref: Optional[Union[str, Path]] = None
+        if artifact_rel:
+            item_ref = artifact_ref_from_rel(artifact_rel)
+        else:
+            item_ref = find_artifact_path(request_id, max_days=max_days)
+
+        if delete_indexed_artifact(kind="extract", artifact_id=request_id, ref=item_ref):
+            deleted_extracts += 1
+
+    eval_obj = batch_obj.get("eval") if isinstance(batch_obj.get("eval"), dict) else {}
+    eval_artifact_rel = str(eval_obj.get("eval_artifact_rel") or "").strip()
+    if eval_artifact_rel:
+        eval_id = Path(eval_artifact_rel).stem
+        if eval_id and eval_id not in seen_eval_ids:
+            seen_eval_ids.add(eval_id)
+            eval_ref = artifact_ref_from_rel(eval_artifact_rel)
+            if delete_indexed_artifact(kind="eval", artifact_id=eval_id, ref=eval_ref):
+                deleted_evals += 1
+
+    deleted_batch = delete_indexed_artifact(kind="batch", artifact_id=run_id, ref=batch_ref)
+
+    return {
+        "run_id": run_id,
+        "deleted_batch": deleted_batch,
+        "deleted_extracts": deleted_extracts,
+        "deleted_evals": deleted_evals,
+    }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { getRun } from "../api/runs";
+import { deleteRun, getMe, getRun } from "../api/runs";
 import type { BatchArtifact } from "../api/types";
 import { ErrorPanel } from "../components/ErrorPanel";
 import { useLayoutContext } from "../layout/LayoutContext";
@@ -56,6 +56,7 @@ function compactError(value: unknown): string {
 export function RunDetailsPage() {
   const { run_id } = useParams<{ run_id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { setRunInspectorState } = useLayoutContext();
   const [onlySchemaInvalid, setOnlySchemaInvalid] = useState(false);
   const [onlyErrors, setOnlyErrors] = useState(false);
@@ -63,10 +64,23 @@ export function RunDetailsPage() {
   const [searchFile, setSearchFile] = useState("");
   const [focusedIndex, setFocusedIndex] = useState(0);
 
+  const meQuery = useQuery({
+    queryKey: ["me"],
+    queryFn: getMe,
+    staleTime: 5 * 60 * 1000,
+  });
   const runQuery = useQuery({
     queryKey: ["run", run_id],
     queryFn: () => getRun(run_id ?? ""),
     enabled: Boolean(run_id),
+  });
+  const deleteRunMutation = useMutation({
+    mutationFn: () => deleteRun(run_id ?? ""),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["runs"] });
+      await queryClient.removeQueries({ queryKey: ["run", run_id] });
+      navigate("/runs", { replace: true });
+    },
   });
 
   const artifact = (runQuery.data ?? {}) as BatchArtifact;
@@ -130,6 +144,7 @@ export function RunDetailsPage() {
   const topErrorCount = (artifact.error_count as number | null | undefined) ?? "-";
   const topArtifactRel = (artifact.artifact_rel as string | null | undefined) ?? "-";
   const evalArtifactRel = typeof batchEval?.eval_artifact_rel === "string" ? batchEval.eval_artifact_rel : null;
+  const canDeleteRun = meQuery.data?.scopes.includes("runs:delete") ?? false;
   const getItemHref = (requestId: string, fileName?: string) => {
     const query = new URLSearchParams();
     if (evalArtifactRel) {
@@ -150,6 +165,32 @@ export function RunDetailsPage() {
 
       {!runQuery.isError && !runQuery.isLoading ? (
         <>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white p-4">
+            <p className="text-sm text-slate-600">
+              Full delete removes the run artifact, related item/eval artifacts, and related terminal jobs.
+            </p>
+            {canDeleteRun ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!run_id) {
+                    return;
+                  }
+                  if (!window.confirm(`Delete run ${run_id}? This cannot be undone.`)) {
+                    return;
+                  }
+                  deleteRunMutation.mutate();
+                }}
+                disabled={deleteRunMutation.isPending}
+                className="rounded border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-900 hover:bg-rose-100 disabled:opacity-60"
+              >
+                {deleteRunMutation.isPending ? "Deleting..." : "Delete run"}
+              </button>
+            ) : null}
+          </div>
+
+          {deleteRunMutation.isError ? <ErrorPanel error={deleteRunMutation.error} /> : null}
+
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr),340px]">
             <div className="rounded-md border border-slate-200 bg-white p-4 text-sm">
               <p><span className="font-medium">run_id:</span> {topRunId}</p>

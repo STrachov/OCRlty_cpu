@@ -1,6 +1,7 @@
 import { fetchJson } from "./client";
 import type {
   BatchArtifact,
+  DeleteRunResponse,
   EvalArtifact,
   ExtractArtifact,
   GroundTruthListResponse,
@@ -50,6 +51,13 @@ export async function listRuns(limit: number, cursor?: string, taskId?: string):
 
 export async function getRun(runId: string): Promise<BatchArtifact> {
   const { data } = await fetchJson<BatchArtifact>(`/v1/runs/${encodeURIComponent(runId)}`);
+  return data;
+}
+
+export async function deleteRun(runId: string): Promise<DeleteRunResponse> {
+  const { data } = await fetchJson<DeleteRunResponse>(`/v1/runs/${encodeURIComponent(runId)}`, {
+    method: "DELETE",
+  });
   return data;
 }
 

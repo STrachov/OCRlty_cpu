@@ -318,3 +318,17 @@ def s3_list_common_prefixes(prefix: str) -> List[str]:
 
 def s3_list_objects(prefix: str, *, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     return _s3_list_objects(prefix, limit=limit)
+
+def s3_delete_object(key: str) -> bool:
+    def _do():
+        return s3_client().delete_object(Bucket=_S3_BUCKET, Key=key)
+
+    try:
+        s3_call_with_retries(_do, op="delete_object", max_attempts=3)
+        return True
+    except botocore.exceptions.ClientError as e:
+        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
+        status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode", 0) or 0)
+        if code in {"NoSuchKey", "404"} or status == 404:
+            return False
+        raise
