@@ -127,6 +127,7 @@ async def list_runs(
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: Optional[str] = Query(default=None),
+    task_id: Optional[str] = Query(default=None),
 ) -> RunsListResponse:
     cursor_created_at: Optional[str] = None
     cursor_run_id: Optional[str] = None
@@ -134,43 +135,110 @@ async def list_runs(
         cursor_created_at, cursor_run_id = _decode_cursor(cursor)
 
     owner_filter = None if principal.role == "admin" else principal.key_id
-    rows, next_cur = list_batch_artifacts(
-        limit=limit,
-        owner_key_id=owner_filter,
-        cursor_created_at=cursor_created_at,
-        cursor_run_id=cursor_run_id,
-    )
+    task_id_filter = str(task_id or "").strip() or None
 
     items: List[RunSummary] = []
-    for r in rows:
-        run_id = str(r.get("artifact_id") or "")
-        full_ref = str(r.get("full_ref") or "")
-        rel_ref = str(r.get("rel_ref") or "")
-        if not run_id or not full_ref:
-            continue
-        try:
-            obj = read_artifact_json(full_ref)
-        except Exception:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        timings_ms = obj.get("timings_ms")
-        total_time = timings_ms.get("total") if isinstance(timings_ms, dict) else None
-        eval_summary = _build_eval_summary(obj.get("eval"))
-        items.append(
-            RunSummary(
-                run_id=run_id,
-                created_at=obj.get("created_at"),
-                task_id=obj.get("task_id"),
-                item_count=obj.get("item_count"),
-                ok_count=obj.get("ok_count"),
-                error_count=obj.get("error_count"),
-                artifact_rel=rel_ref or None,
-                total_time=total_time,
-                eval_summary=eval_summary,
-            )
+    next_cursor: Optional[str] = None
+
+    if task_id_filter is None:
+        rows, next_cur = list_batch_artifacts(
+            limit=limit,
+            owner_key_id=owner_filter,
+            cursor_created_at=cursor_created_at,
+            cursor_run_id=cursor_run_id,
         )
-    next_cursor = _encode_cursor(next_cur[0], next_cur[1]) if next_cur else None
+
+        for r in rows:
+            run_id = str(r.get("artifact_id") or "")
+            full_ref = str(r.get("full_ref") or "")
+            rel_ref = str(r.get("rel_ref") or "")
+            if not run_id or not full_ref:
+                continue
+            try:
+                obj = read_artifact_json(full_ref)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            timings_ms = obj.get("timings_ms")
+            total_time = timings_ms.get("total") if isinstance(timings_ms, dict) else None
+            eval_summary = _build_eval_summary(obj.get("eval"))
+            items.append(
+                RunSummary(
+                    run_id=run_id,
+                    created_at=obj.get("created_at"),
+                    task_id=obj.get("task_id"),
+                    item_count=obj.get("item_count"),
+                    ok_count=obj.get("ok_count"),
+                    error_count=obj.get("error_count"),
+                    artifact_rel=rel_ref or None,
+                    total_time=total_time,
+                    eval_summary=eval_summary,
+                )
+            )
+        next_cursor = _encode_cursor(next_cur[0], next_cur[1]) if next_cur else None
+    else:
+        scan_created_at = cursor_created_at
+        scan_run_id = cursor_run_id
+        scan_limit = min(max(limit * 3, 50), 200)
+        matched_positions: List[tuple[str, str]] = []
+
+        while len(items) < limit + 1:
+            rows, next_cur = list_batch_artifacts(
+                limit=scan_limit,
+                owner_key_id=owner_filter,
+                cursor_created_at=scan_created_at,
+                cursor_run_id=scan_run_id,
+            )
+            if not rows:
+                break
+
+            for r in rows:
+                run_id = str(r.get("artifact_id") or "")
+                full_ref = str(r.get("full_ref") or "")
+                rel_ref = str(r.get("rel_ref") or "")
+                row_created_at = str(r.get("created_at") or "")
+                if not run_id or not full_ref or not row_created_at:
+                    continue
+                try:
+                    obj = read_artifact_json(full_ref)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if str(obj.get("task_id") or "").strip() != task_id_filter:
+                    continue
+
+                timings_ms = obj.get("timings_ms")
+                total_time = timings_ms.get("total") if isinstance(timings_ms, dict) else None
+                eval_summary = _build_eval_summary(obj.get("eval"))
+                items.append(
+                    RunSummary(
+                        run_id=run_id,
+                        created_at=obj.get("created_at"),
+                        task_id=obj.get("task_id"),
+                        item_count=obj.get("item_count"),
+                        ok_count=obj.get("ok_count"),
+                        error_count=obj.get("error_count"),
+                        artifact_rel=rel_ref or None,
+                        total_time=total_time,
+                        eval_summary=eval_summary,
+                    )
+                )
+                matched_positions.append((row_created_at, run_id))
+                if len(items) >= limit + 1:
+                    break
+
+            if len(items) >= limit + 1 or next_cur is None:
+                break
+            scan_created_at, scan_run_id = next_cur
+
+        if len(items) > limit:
+            page_positions = matched_positions[:limit]
+            items = items[:limit]
+            if page_positions:
+                next_cursor = _encode_cursor(page_positions[-1][0], page_positions[-1][1])
+
     return RunsListResponse(items=items, limit=limit, next_cursor=next_cursor)
 
 

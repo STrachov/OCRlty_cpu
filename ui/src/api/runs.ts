@@ -36,10 +36,13 @@ export async function updateRuntimeSetting(
   return data;
 }
 
-export async function listRuns(limit: number, cursor?: string): Promise<RunsListResponse> {
+export async function listRuns(limit: number, cursor?: string, taskId?: string): Promise<RunsListResponse> {
   const query = new URLSearchParams({ limit: String(limit) });
   if (cursor) {
     query.set("cursor", cursor);
+  }
+  if (taskId) {
+    query.set("task_id", taskId);
   }
   const { data } = await fetchJson<RunsListResponse>(`/v1/runs?${query.toString()}`);
   return data;
