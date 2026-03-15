@@ -14,6 +14,54 @@ type RightPanelProps = {
   onRefreshRuns?: () => void;
 };
 
+type EvalFieldRow = {
+  path: string;
+  matched: number;
+  mismatch: number;
+  pred_missing: number;
+  gt_missing: number;
+  canon_error: number;
+  accuracy: number | null;
+  total: number;
+};
+
+function normalizeEvalFields(value: unknown): EvalFieldRow[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") {
+        return null;
+      }
+      const record = row as Record<string, unknown>;
+      const path = typeof record.path === "string" ? record.path : "";
+      if (!path) {
+        return null;
+      }
+      const matched = Number(record.matched ?? 0) || 0;
+      const mismatch = Number(record.mismatch ?? 0) || 0;
+      const pred_missing = Number(record.pred_missing ?? 0) || 0;
+      const gt_missing = Number(record.gt_missing ?? 0) || 0;
+      const canon_error = Number(record.canon_error ?? 0) || 0;
+      const total = Number(record.total ?? matched + mismatch + pred_missing + gt_missing + canon_error) || 0;
+      const accuracyRaw = record.accuracy;
+      const accuracy = typeof accuracyRaw === "number" ? accuracyRaw : null;
+      return {
+        path,
+        matched,
+        mismatch,
+        pred_missing,
+        gt_missing,
+        canon_error,
+        accuracy,
+        total,
+      };
+    })
+    .filter((row): row is EvalFieldRow => row !== null);
+}
+
 function ItemImagePreview({ itemData }: { itemData: Record<string, unknown> | null }) {
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
@@ -124,6 +172,17 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
       focusedRunSummary && typeof focusedRunSummary.eval_summary === "object" && focusedRunSummary.eval_summary !== null
         ? focusedRunSummary.eval_summary
         : null;
+    const problematicFields = normalizeEvalFields(evalSummary?.fields)
+      .filter((row) => row.mismatch > 0 || row.pred_missing > 0 || row.gt_missing > 0 || row.canon_error > 0)
+      .sort((a, b) => {
+        const severityA = a.mismatch * 4 + a.pred_missing * 3 + a.gt_missing * 3 + a.canon_error * 2;
+        const severityB = b.mismatch * 4 + b.pred_missing * 3 + b.gt_missing * 3 + b.canon_error * 2;
+        if (severityA !== severityB) {
+          return severityB - severityA;
+        }
+        return a.path.localeCompare(b.path);
+      })
+      .slice(0, 8);
     return (
       <aside className="w-[360px] shrink-0 space-y-4 overflow-y-auto border-l border-slate-200 bg-white p-4">
         <div className="rounded border border-slate-200 p-3 text-sm">
@@ -136,7 +195,7 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
             Refresh
           </button>
         </div>
-        <div className="rounded border border-slate-200 p-3 text-sm">
+        {/* <div className="rounded border border-slate-200 p-3 text-sm">
           <h3 className="mb-2 text-sm font-semibold">Run Preview</h3>
           {focusedRunSummary ? (
             <>
@@ -150,7 +209,7 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
           ) : (
             <p className="text-slate-500">Select a run to preview it here.</p>
           )}
-        </div>
+        </div> */}
         {focusedRunSummary ? (
           <div className="rounded border border-slate-200 p-3 text-sm">
             <h3 className="mb-2 text-sm font-semibold">Evaluation</h3>
@@ -162,12 +221,48 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
                 <p><span className="font-medium">pred_found:</span> {String(evalSummary.pred_found ?? "-")}</p>
                 <p><span className="font-medium">pred_missing:</span> {String(evalSummary.pred_missing ?? "-")}</p>
                 <p><span className="font-medium">mismatched:</span> {String(evalSummary.mismatched ?? "-")}</p>
-              
                 <p><span className="font-medium">str_mode:</span> {String(evalSummary.str_mode ?? "-")}</p>
                 <p><span className="font-medium">decimal_sep:</span> {String(evalSummary.decimal_sep ?? "-")}</p>
               </>
             ) : (
               <p className="text-slate-500">No evaluation for this run.</p>
+            )}
+          </div>
+        ) : null}
+        {focusedRunSummary && evalSummary ? (
+          <div className="rounded border border-slate-200 p-3 text-sm">
+            <h3 className="mb-2 text-sm font-semibold">Field Quality</h3>
+            {problematicFields.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-100 text-left">
+                    <tr>
+                      <th className="px-2 py-1">path</th>
+                      <th className="px-2 py-1">mismatch</th>
+                      <th className="px-2 py-1">pred-</th>
+                      <th className="px-2 py-1">gt-</th>
+                      <th className="px-2 py-1">canon</th>
+                      <th className="px-2 py-1">acc</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {problematicFields.map((row) => (
+                      <tr key={row.path} className="border-t border-slate-100 align-top">
+                        <td className="px-2 py-1 font-mono text-[11px] text-slate-700">{row.path}</td>
+                        <td className="px-2 py-1">{row.mismatch}</td>
+                        <td className="px-2 py-1">{row.pred_missing}</td>
+                        <td className="px-2 py-1">{row.gt_missing}</td>
+                        <td className="px-2 py-1">{row.canon_error}</td>
+                        <td className="px-2 py-1">
+                          {row.accuracy === null ? "-" : `${(row.accuracy * 100).toFixed(0)}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-slate-500">No problematic fields for this run.</p>
             )}
           </div>
         ) : null}

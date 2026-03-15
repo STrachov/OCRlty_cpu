@@ -58,6 +58,7 @@ export type EvalSummary = {
   str_mode?: string;
   decimal_sep?: string;
   mismatched?: number;
+  fields?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 };
 

@@ -55,6 +55,13 @@ def test_is_context_too_long_error_matches_vllm_message():
     )
 
 
+def test_is_context_too_long_error_matches_negative_remaining_max_tokens():
+    assert extract_service._is_context_too_long_error(
+        status_code=400,
+        detail="{'error': {'message': 'max_tokens must be at least 1, got -1405. (parameter=max_tokens, value=-1405)'}}",
+    )
+
+
 def test_extract_context_lengths_parses_vllm_message():
     assert extract_service._extract_context_lengths(
         "{'error': {'message': 'The decoder prompt (length 9597) is longer than the maximum model length of 4096.'}}"
@@ -80,9 +87,19 @@ def test_compute_context_prompt_budget_reserves_completion_and_margin(monkeypatc
     assert extract_service._compute_context_prompt_budget(model_len=8192, max_tokens=1024) == 6912
 
 
+def test_compute_context_prompt_budget_stays_positive_when_reserve_exceeds_model_len(monkeypatch):
+    monkeypatch.setattr(extract_service.settings, "VLLM_CONTEXT_RESPONSE_RESERVE_TOKENS", 4096)
+    monkeypatch.setattr(extract_service.settings, "VLLM_CONTEXT_SAFETY_MARGIN_TOKENS", 2048)
+    assert extract_service._compute_context_prompt_budget(model_len=1024, max_tokens=1024) >= 1
+
+
 def test_compute_retry_max_tokens_reduces_budget_on_retry():
     assert extract_service._compute_retry_max_tokens(current_max_tokens=1024, attempt=2) < 1024
     assert extract_service._compute_retry_max_tokens(current_max_tokens=1024, attempt=2) >= 256
+
+
+def test_compute_retry_max_tokens_clamps_negative_values():
+    assert extract_service._compute_retry_max_tokens(current_max_tokens=-1405, attempt=2) == 1
 
 
 @pytest.mark.asyncio

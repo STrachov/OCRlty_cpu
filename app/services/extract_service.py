@@ -300,7 +300,7 @@ def _estimate_prompt_tokens(text: str) -> int:
 
 
 _TOO_LONG_PAT = re.compile(
-    r"(decoder prompt too long|decoder prompt .* longer than the maximum model length|maximum model length)",
+    r"(decoder prompt too long|decoder prompt .* longer than the maximum model length|maximum model length|max_tokens must be at least 1, got -\d+)",
     re.IGNORECASE,
 )
 _CTX_LEN_PAT = re.compile(r"length\s+(\d+).*maximum model length of\s+(\d+)", re.IGNORECASE)
@@ -326,12 +326,17 @@ def _extract_context_lengths(detail: Any) -> Optional[Tuple[int, int]]:
 
 
 def _compute_context_prompt_budget(*, model_len: int, max_tokens: int) -> int:
+    model_len = max(1, int(model_len))
     reserve = max(
         int(max_tokens),
         int(getattr(settings, "VLLM_CONTEXT_RESPONSE_RESERVE_TOKENS", 512) or 512),
     )
-    safety = int(getattr(settings, "VLLM_CONTEXT_SAFETY_MARGIN_TOKENS", 256) or 256)
-    return max(256, int(model_len) - reserve - safety)
+    safety = max(0, int(getattr(settings, "VLLM_CONTEXT_SAFETY_MARGIN_TOKENS", 256) or 256))
+    budget = model_len - reserve - safety
+    if budget >= 256:
+        return budget
+    # If reserve+safety exceed the model window, keep at least a tiny positive prompt budget.
+    return max(1, min(256, model_len - 1))
 
 
 def _compute_retry_scale(*, attempt: int, max_attempts: int, detail: Any = None, max_tokens: int = 0) -> float:
@@ -352,13 +357,14 @@ def _compute_retry_scale(*, attempt: int, max_attempts: int, detail: Any = None,
 
 
 def _compute_retry_max_tokens(*, current_max_tokens: int, attempt: int) -> int:
+    current_max_tokens = _clamp_max_tokens(current_max_tokens)
     floor = min(256, current_max_tokens)
     if floor <= 0:
-        floor = 128
+        floor = 1
     if attempt <= 1:
         return current_max_tokens
     reduced = int(round(current_max_tokens * (0.75 ** (attempt - 1))))
-    return max(floor, min(current_max_tokens, reduced))
+    return _clamp_max_tokens(max(floor, min(current_max_tokens, reduced)))
 
 
 def _resize_base64_image_by_scale(image_base64: str, *, scale: float) -> str:
@@ -645,13 +651,14 @@ async def extract(
 
     while True:
         try:
+            effective_max_tokens = _clamp_max_tokens(effective_max_tokens)
             _log_event(
                 logging.INFO,
                 "vllm_call_start",
                 request_id=request_id,
                 attempt=attempt,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
             )
 
             t_v0 = time.monotonic()
