@@ -18,6 +18,8 @@ const RUNTIME_SETTING_ORDER: RuntimeSettingKey[] = [
   "INFERENCE_BACKEND",
   "VLLM_BASE_URL",
   "VLLM_MODEL",
+  "VLLM_TEMPERATURE",
+  "VLLM_MAX_TOKENS",
   "VLLM_API_KEY",
   "DEBUG_MODE",
   "S3_PRESIGN_TTL_S",
@@ -27,6 +29,8 @@ const RUNTIME_SETTING_LABELS: Record<RuntimeSettingKey, string> = {
   VLLM_BASE_URL: "vLLM Base URL",
   VLLM_API_KEY: "vLLM API Key",
   VLLM_MODEL: "vLLM Model",
+  VLLM_TEMPERATURE: "vLLM Temperature",
+  VLLM_MAX_TOKENS: "vLLM Max Tokens",
   INFERENCE_BACKEND: "Inference Backend",
   DEBUG_MODE: "Debug Mode",
   S3_PRESIGN_TTL_S: "S3 Presign TTL",
@@ -36,6 +40,8 @@ const RUNTIME_SETTING_HINTS: Record<RuntimeSettingKey, string> = {
   VLLM_BASE_URL: "HTTP endpoint used by the backend for vLLM requests.",
   VLLM_API_KEY: "Stored as a DB override. Existing secret values stay masked.",
   VLLM_MODEL: "Model identifier used for inference requests.",
+  VLLM_TEMPERATURE: "Default generation temperature used for new inference requests.",
+  VLLM_MAX_TOKENS: "Default max_tokens used for new inference requests.",
   INFERENCE_BACKEND: "Switch between runtime backends without restart.",
   DEBUG_MODE: "Controls debug behavior on the backend.",
   S3_PRESIGN_TTL_S: "Lifetime in seconds for generated presigned URLs.",
@@ -88,6 +94,24 @@ function validateRuntimeSetting(key: RuntimeSettingKey, value: string): string |
     const parsed = Number(trimmed);
     if (parsed < 1 || parsed > 86400) {
       return "Allowed range: 1..86400.";
+    }
+  }
+  if (key === "VLLM_MAX_TOKENS") {
+    if (!/^\d+$/.test(trimmed)) {
+      return "Enter an integer value.";
+    }
+    const parsed = Number(trimmed);
+    if (parsed < 1 || parsed > 8192) {
+      return "Allowed range: 1..8192.";
+    }
+  }
+  if (key === "VLLM_TEMPERATURE") {
+    if (!/^\d+(\.\d+)?$/.test(trimmed) && !/^0?\.\d+$/.test(trimmed)) {
+      return "Enter a numeric value.";
+    }
+    const parsed = Number(trimmed);
+    if (Number.isNaN(parsed) || parsed < 0 || parsed > 2) {
+      return "Allowed range: 0..2.";
     }
   }
   if ((key === "VLLM_BASE_URL" || key === "VLLM_MODEL") && trimmed.length === 0) {
@@ -182,6 +206,8 @@ export function SettingsPage() {
     VLLM_BASE_URL: "",
     VLLM_API_KEY: "",
     VLLM_MODEL: "",
+    VLLM_TEMPERATURE: "0",
+    VLLM_MAX_TOKENS: "",
     INFERENCE_BACKEND: "vllm",
     DEBUG_MODE: "false",
     S3_PRESIGN_TTL_S: "",
@@ -440,10 +466,35 @@ export function SettingsPage() {
                         <label className="block text-sm font-medium text-slate-800">
                           Value
                           <input
-                            type={item.key === "VLLM_API_KEY" ? "password" : item.key === "S3_PRESIGN_TTL_S" ? "number" : "text"}
-                            inputMode={item.key === "S3_PRESIGN_TTL_S" ? "numeric" : undefined}
-                            min={item.key === "S3_PRESIGN_TTL_S" ? 1 : undefined}
-                            max={item.key === "S3_PRESIGN_TTL_S" ? 86400 : undefined}
+                            type={
+                              item.key === "VLLM_API_KEY"
+                                ? "password"
+                                : item.key === "S3_PRESIGN_TTL_S" || item.key === "VLLM_MAX_TOKENS" || item.key === "VLLM_TEMPERATURE"
+                                  ? "number"
+                                  : "text"
+                            }
+                            inputMode={
+                              item.key === "S3_PRESIGN_TTL_S" || item.key === "VLLM_MAX_TOKENS" || item.key === "VLLM_TEMPERATURE"
+                                ? "numeric"
+                                : undefined
+                            }
+                            min={
+                              item.key === "S3_PRESIGN_TTL_S" || item.key === "VLLM_MAX_TOKENS"
+                                ? 1
+                                : item.key === "VLLM_TEMPERATURE"
+                                  ? 0
+                                  : undefined
+                            }
+                            max={
+                              item.key === "S3_PRESIGN_TTL_S"
+                                ? 86400
+                                : item.key === "VLLM_MAX_TOKENS"
+                                  ? 8192
+                                  : item.key === "VLLM_TEMPERATURE"
+                                    ? 2
+                                    : undefined
+                            }
+                            step={item.key === "VLLM_TEMPERATURE" ? "0.1" : undefined}
                             value={runtimeEditor[item.key]}
                             onChange={(e) => {
                               const value = e.target.value;

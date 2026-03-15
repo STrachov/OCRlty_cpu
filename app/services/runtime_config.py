@@ -17,6 +17,8 @@ _META: Dict[str, Dict[str, Any]] = {
     "VLLM_BASE_URL": {"type": "str", "secret": False},
     "VLLM_API_KEY": {"type": "str", "secret": True},
     "VLLM_MODEL": {"type": "str", "secret": False},
+    "VLLM_TEMPERATURE": {"type": "float", "secret": False, "min": 0.0, "max": 2.0},
+    "VLLM_MAX_TOKENS": {"type": "int", "secret": False, "min": 1, "max": 8192},
     "INFERENCE_BACKEND": {"type": "str", "secret": False, "choices": {"mock", "vllm"}},
     "DEBUG_MODE": {"type": "bool", "secret": False},
     "S3_PRESIGN_TTL_S": {"type": "int", "secret": False, "min": 1, "max": 86400},
@@ -78,6 +80,8 @@ def _coerce_from_text(key: str, value_text: str) -> Any:
         return _parse_bool(value_text)
     if typ == "int":
         return int(str(value_text).strip())
+    if typ == "float":
+        return float(str(value_text).strip())
     return str(value_text)
 
 
@@ -98,6 +102,13 @@ def _validate_for_store(key: str, value: str) -> str:
         if "max" in meta:
             iv = min(int(meta["max"]), iv)
         out = str(iv)
+    elif typ == "float":
+        fv = float(raw.strip())
+        if "min" in meta:
+            fv = max(float(meta["min"]), fv)
+        if "max" in meta:
+            fv = min(float(meta["max"]), fv)
+        out = str(fv)
     else:
         raise ValueError(f"Unsupported runtime setting type: {typ}")
     choices = meta.get("choices")
@@ -131,6 +142,13 @@ def get_int(key: str, default: int) -> int:
         return int(get_value(key, default))
     except Exception:
         return int(default)
+
+
+def get_float(key: str, default: float) -> float:
+    try:
+        return float(get_value(key, default))
+    except Exception:
+        return float(default)
 
 
 def set_value(*, key: str, value: str, updated_by_key_id: Optional[str]) -> RuntimeSettingRecord:

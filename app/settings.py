@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     VLLM_BASE_URL: str = "http://127.0.0.1:8000"
     VLLM_API_KEY: str = ""
     VLLM_MAX_MODEL_LEN: int = 4096
+    VLLM_TEMPERATURE: float = 0.0
     VLLM_MAX_TOKENS: int = 1024
     VLLM_MAX_TOKENS_LIMIT: int = 8192
     VLLM_CONTEXT_RESPONSE_RESERVE_TOKENS: int = 512

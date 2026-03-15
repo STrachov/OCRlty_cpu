@@ -36,7 +36,7 @@ from app.services.artifacts import (
     to_artifact_rel,
 )
 from app.services.s3_service import s3_enabled, s3_get_bytes, s3_key, s3_put_bytes, s3_put_json, s3_put_json_overwrite
-from app.services.runtime_config import get_bool, get_str
+from app.services.runtime_config import get_bool, get_float, get_int, get_str
 
 from app.handlers import (
     _ctx_request_id,
@@ -548,8 +548,8 @@ def _apply_debug_overrides(
 ) -> Tuple[str, float, int, Dict[str, Any]]:
     prompt_text = base_prompt_text
     schema_json: Any = base_schema_json
-    temperature = float(getattr(settings, "VLLM_TEMPERATURE", 0.0) or 0.0)
-    max_tokens = _clamp_max_tokens(int(getattr(settings, "VLLM_MAX_TOKENS", 1024) or 1024))
+    temperature = float(get_float("VLLM_TEMPERATURE", getattr(settings, "VLLM_TEMPERATURE", 0.0) or 0.0))
+    max_tokens = _clamp_max_tokens(int(get_int("VLLM_MAX_TOKENS", getattr(settings, "VLLM_MAX_TOKENS", 1024) or 1024)))
 
     if not debug:
         return prompt_text, temperature, max_tokens, _normalize_schema(schema_json)

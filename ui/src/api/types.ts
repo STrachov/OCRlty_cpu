@@ -8,6 +8,8 @@ export type RuntimeSettingKey =
   | "VLLM_BASE_URL"
   | "VLLM_API_KEY"
   | "VLLM_MODEL"
+  | "VLLM_TEMPERATURE"
+  | "VLLM_MAX_TOKENS"
   | "INFERENCE_BACKEND"
   | "DEBUG_MODE"
   | "S3_PRESIGN_TTL_S";
