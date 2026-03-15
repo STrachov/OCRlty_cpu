@@ -155,7 +155,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,   # не "*", если есть auth
     allow_credentials=False,          # True только если cookie-based auth
-    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )

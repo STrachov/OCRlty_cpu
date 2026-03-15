@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useOutletContext, useSearchParams } from "react-router-dom";
-import { listRuns } from "../api/runs";
-import { CopyButton } from "../components/CopyButton";
+import { deleteRun, getMe, listRuns } from "../api/runs";
 import { ErrorPanel } from "../components/ErrorPanel";
 import { useLayoutContext } from "../layout/LayoutContext";
 
@@ -20,19 +19,54 @@ export function RunsPage() {
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [pageIndex, setPageIndex] = useState(0);
   const [cursorStack, setCursorStack] = useState<(string | undefined)[]>([undefined]);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const taskFilter = searchParams.get("task_id")?.trim() ?? "";
   const cursor = cursorStack[pageIndex];
 
+  const meQuery = useQuery({
+    queryKey: ["me"],
+    queryFn: getMe,
+    staleTime: 5 * 60 * 1000,
+  });
   const runsQuery = useQuery({
     queryKey: ["runs", PAGE_SIZE, cursor ?? null, taskFilter],
     queryFn: () => listRuns(PAGE_SIZE, cursor, taskFilter || undefined),
     placeholderData: (previousData) => previousData,
+  });
+  const deleteRunsMutation = useMutation({
+    mutationFn: async (runIds: string[]) => {
+      const deleted: string[] = [];
+      const failed: Array<{ runId: string; message: string }> = [];
+      for (const runId of runIds) {
+        try {
+          await deleteRun(runId);
+          deleted.push(runId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Delete failed";
+          failed.push({ runId, message });
+        }
+      }
+      return { deleted, failed };
+    },
+    onSuccess: async ({ deleted }) => {
+      if (deleted.length > 0) {
+        setSelectedRunIds((current) => current.filter((runId) => !deleted.includes(runId)));
+        await queryClient.invalidateQueries({ queryKey: ["runs"] });
+      }
+    },
   });
 
   const rows = runsQuery.data?.items ?? [];
   const nextCursor = runsQuery.data?.next_cursor ?? null;
   const canGoPrev = pageIndex > 0;
   const canGoNext = Boolean(nextCursor);
+  const canDeleteRuns = meQuery.data?.scopes.includes("runs:delete") ?? false;
+  const pageRunIds = useMemo(
+    () => rows.map((row) => String(row.run_id ?? "")).filter((runId) => runId),
+    [rows]
+  );
+  const selectedOnPageCount = pageRunIds.filter((runId) => selectedRunIds.includes(runId)).length;
+  const allPageRowsSelected = pageRunIds.length > 0 && selectedOnPageCount === pageRunIds.length;
 
   function updateTaskFilter(value: string) {
     const params = new URLSearchParams(searchParams);
@@ -46,6 +80,29 @@ export function RunsPage() {
     setPageIndex(0);
     setCursorStack([undefined]);
     setFocusedIndex(0);
+  }
+
+  function toggleRunSelection(runId: string, checked: boolean) {
+    setSelectedRunIds((current) => {
+      if (checked) {
+        if (current.includes(runId)) {
+          return current;
+        }
+        return [...current, runId];
+      }
+      return current.filter((value) => value !== runId);
+    });
+  }
+
+  function toggleSelectPage(checked: boolean) {
+    setSelectedRunIds((current) => {
+      if (checked) {
+        const next = new Set(current);
+        pageRunIds.forEach((runId) => next.add(runId));
+        return [...next];
+      }
+      return current.filter((runId) => !pageRunIds.includes(runId));
+    });
   }
 
   useEffect(() => {
@@ -92,6 +149,18 @@ export function RunsPage() {
     setPageIndex((value) => value + 1);
   }
 
+  function handleDeleteSelected() {
+    if (selectedRunIds.length === 0) {
+      return;
+    }
+    const preview = selectedRunIds.slice(0, 5).join(", ");
+    const suffix = selectedRunIds.length > 5 ? ` and ${selectedRunIds.length - 5} more` : "";
+    if (!window.confirm(`Delete ${selectedRunIds.length} run(s): ${preview}${suffix}? This cannot be undone.`)) {
+      return;
+    }
+    deleteRunsMutation.mutate(selectedRunIds);
+  }
+
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -128,8 +197,43 @@ export function RunsPage() {
         ) : null}
       </div>
 
+      {canDeleteRuns ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3">
+          <div className="text-sm text-slate-600">
+            Selected: {selectedRunIds.length}
+            {deleteRunsMutation.isSuccess ? (
+              <span>
+                {" · "}Deleted {deleteRunsMutation.data.deleted.length}
+                {deleteRunsMutation.data.failed.length > 0 ? ` · Failed ${deleteRunsMutation.data.failed.length}` : ""}
+              </span>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={handleDeleteSelected}
+            disabled={selectedRunIds.length === 0 || deleteRunsMutation.isPending}
+            className="rounded border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-900 hover:bg-rose-100 disabled:opacity-60"
+          >
+            {deleteRunsMutation.isPending ? "Deleting..." : "Delete selected"}
+          </button>
+        </div>
+      ) : null}
+
       {runsQuery.isLoading ? <p className="text-sm text-slate-600">Loading runs...</p> : null}
       {runsQuery.isError ? <ErrorPanel error={runsQuery.error} /> : null}
+      {deleteRunsMutation.isError ? <ErrorPanel error={deleteRunsMutation.error} /> : null}
+      {deleteRunsMutation.data?.failed.length ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">Some runs were not deleted.</p>
+          <ul className="mt-2 space-y-1">
+            {deleteRunsMutation.data.failed.map((item) => (
+              <li key={item.runId}>
+                <span className="font-mono">{item.runId}</span>: {item.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {!runsQuery.isError ? (
         <div
@@ -148,6 +252,16 @@ export function RunsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-left">
               <tr>
+                {canDeleteRuns ? (
+                  <th className="px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={allPageRowsSelected}
+                      onChange={(e) => toggleSelectPage(e.target.checked)}
+                      aria-label="Select current page runs"
+                    />
+                  </th>
+                ) : null}
                 <th className="px-3 py-2">created_at</th>
                 <th className="px-3 py-2">run_id</th>
                 <th className="px-3 py-2">task_id</th>
@@ -165,18 +279,27 @@ export function RunsPage() {
                   onClick={() => setFocusedIndex(idx)}
                   onMouseEnter={() => setFocusedIndex(idx)}
                 >
+                  {canDeleteRuns ? (
+                    <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                      {row.run_id ? (
+                        <input
+                          type="checkbox"
+                          checked={selectedRunIds.includes(String(row.run_id))}
+                          onChange={(e) => toggleRunSelection(String(row.run_id), e.target.checked)}
+                          aria-label={`Select run ${String(row.run_id)}`}
+                        />
+                      ) : null}
+                    </td>
+                  ) : null}
                   <td className="px-3 py-2">{String(row.created_at ?? "-")}</td>
                   <td className="px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      {row.run_id ? (
-                        <Link className="text-blue-700 hover:underline" to={`/runs/${encodeURIComponent(String(row.run_id))}`}>
-                          {String(row.run_id)}
-                        </Link>
-                      ) : (
-                        "-"
-                      )}
-                      {row.run_id ? <CopyButton text={String(row.run_id)} /> : null}
-                    </div>
+                    {row.run_id ? (
+                      <Link className="text-blue-700 hover:underline" to={`/runs/${encodeURIComponent(String(row.run_id))}`}>
+                        {String(row.run_id)}
+                      </Link>
+                    ) : (
+                      "-"
+                    )}
                   </td>
                   <td className="px-3 py-2">{String(row.task_id ?? "-")}</td>
                   <td className="px-3 py-2">{String(row.item_count ?? "-")}</td>
@@ -187,7 +310,7 @@ export function RunsPage() {
               ))}
               {rows.length === 0 && !runsQuery.isLoading ? (
                 <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                  <td colSpan={canDeleteRuns ? 8 : 7} className="px-3 py-6 text-center text-slate-500">
                     No runs found.
                   </td>
                 </tr>
