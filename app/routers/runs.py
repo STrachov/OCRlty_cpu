@@ -39,6 +39,12 @@ class RunSummary(BaseModel):
     run_id: str
     created_at: Optional[str] = None
     task_id: Optional[str] = None
+    model_id: Optional[str] = None
+    prompt_sha256: Optional[str] = None
+    schema_sha256: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    code_version: Optional[str] = None
     item_count: Optional[int] = None
     ok_count: Optional[int] = None
     error_count: Optional[int] = None
@@ -188,6 +194,12 @@ async def list_runs(
                     run_id=run_id,
                     created_at=obj.get("created_at"),
                     task_id=obj.get("task_id"),
+                    model_id=obj.get("model_id"),
+                    prompt_sha256=obj.get("prompt_sha256"),
+                    schema_sha256=obj.get("schema_sha256"),
+                    temperature=obj.get("temperature"),
+                    max_tokens=obj.get("max_tokens"),
+                    code_version=obj.get("code_version"),
                     item_count=obj.get("item_count"),
                     ok_count=obj.get("ok_count"),
                     error_count=obj.get("error_count"),
@@ -237,6 +249,12 @@ async def list_runs(
                         run_id=run_id,
                         created_at=obj.get("created_at"),
                         task_id=obj.get("task_id"),
+                        model_id=obj.get("model_id"),
+                        prompt_sha256=obj.get("prompt_sha256"),
+                        schema_sha256=obj.get("schema_sha256"),
+                        temperature=obj.get("temperature"),
+                        max_tokens=obj.get("max_tokens"),
+                        code_version=obj.get("code_version"),
                         item_count=obj.get("item_count"),
                         ok_count=obj.get("ok_count"),
                         error_count=obj.get("error_count"),

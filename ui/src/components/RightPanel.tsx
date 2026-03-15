@@ -212,6 +212,17 @@ export function RightPanel({ onRefreshRuns }: RightPanelProps) {
         </div> */}
         {focusedRunSummary ? (
           <div className="rounded border border-slate-200 p-3 text-sm">
+            <h3 className="mb-2 text-sm font-semibold">Run Settings</h3>
+            <p><span className="font-medium">model_id:</span> {String(focusedRunSummary.model_id ?? "-")}</p>
+            <p><span className="font-medium">temperature:</span> {String(focusedRunSummary.temperature ?? "-")}</p>
+            <p><span className="font-medium">max_tokens:</span> {String(focusedRunSummary.max_tokens ?? "-")}</p>
+            <p><span className="font-medium">code_version:</span> {String(focusedRunSummary.code_version ?? "-")}</p>
+            <p><span className="font-medium">prompt_sha256:</span> {String(focusedRunSummary.prompt_sha256 ?? "-")}</p>
+            <p><span className="font-medium">schema_sha256:</span> {String(focusedRunSummary.schema_sha256 ?? "-")}</p>
+          </div>
+        ) : null}
+        {focusedRunSummary ? (
+          <div className="rounded border border-slate-200 p-3 text-sm">
             <h3 className="mb-2 text-sm font-semibold">Evaluation</h3>
             {evalSummary ? (
               <>

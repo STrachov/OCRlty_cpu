@@ -68,6 +68,12 @@ export type RunSummary = {
   run_id?: string;
   created_at?: string | null;
   task_id?: string | null;
+  model_id?: string | null;
+  prompt_sha256?: string | null;
+  schema_sha256?: string | null;
+  temperature?: number | null;
+  max_tokens?: number | null;
+  code_version?: string | null;
   item_count?: number | null;
   ok_count?: number | null;
   error_count?: number | null;

@@ -143,6 +143,12 @@ export function RunDetailsPage() {
   const topOkCount = (artifact.ok_count as number | null | undefined) ?? "-";
   const topErrorCount = (artifact.error_count as number | null | undefined) ?? "-";
   const topArtifactRel = (artifact.artifact_rel as string | null | undefined) ?? "-";
+  const topModelId = (artifact.model_id as string | null | undefined) ?? "-";
+  const topPromptSha = (artifact.prompt_sha256 as string | null | undefined) ?? "-";
+  const topSchemaSha = (artifact.schema_sha256 as string | null | undefined) ?? "-";
+  const topTemperature = (artifact.temperature as number | null | undefined) ?? "-";
+  const topMaxTokens = (artifact.max_tokens as number | null | undefined) ?? "-";
+  const topCodeVersion = (artifact.code_version as string | null | undefined) ?? "-";
   const evalArtifactRel = typeof batchEval?.eval_artifact_rel === "string" ? batchEval.eval_artifact_rel : null;
   const canDeleteRun = meQuery.data?.scopes.includes("runs:delete") ?? false;
   const getItemHref = (requestId: string, fileName?: string) => {
@@ -199,6 +205,12 @@ export function RunDetailsPage() {
               <p><span className="font-medium">item_count:</span> {String(topItemCount)}</p>
               <p><span className="font-medium">ok_count:</span> {String(topOkCount)}</p>
               <p><span className="font-medium">error_count:</span> {String(topErrorCount)}</p>
+              <p><span className="font-medium">model_id:</span> {topModelId}</p>
+              <p><span className="font-medium">temperature:</span> {String(topTemperature)}</p>
+              <p><span className="font-medium">max_tokens:</span> {String(topMaxTokens)}</p>
+              <p><span className="font-medium">code_version:</span> {topCodeVersion}</p>
+              <p><span className="font-medium">prompt_sha256:</span> {topPromptSha}</p>
+              <p><span className="font-medium">schema_sha256:</span> {topSchemaSha}</p>
               <p><span className="font-medium">artifact_rel:</span> {topArtifactRel}</p>
             </div>
             {evalSummary ? (
