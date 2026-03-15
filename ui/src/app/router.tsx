@@ -9,6 +9,7 @@ import { ItemPage } from "../pages/ItemPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { GroundTruthsPage } from "../pages/GroundTruthsPage";
 import { CreateGroundTruthPage } from "../pages/CreateGroundTruthPage";
+import { GroundTruthEditorPage } from "../pages/GroundTruthEditorPage";
 import { AppLayout } from "../layout/AppLayout";
 
 function DefaultRedirect() {
@@ -27,6 +28,7 @@ export function AppRouter() {
             <Route path="/runs/:run_id" element={<RunDetailsPage />} />
             <Route path="/ground-truths" element={<GroundTruthsPage />} />
             <Route path="/ground-truths/new" element={<CreateGroundTruthPage />} />
+            <Route path="/ground-truths/:gt_id" element={<GroundTruthEditorPage />} />
             <Route path="/items/:request_id" element={<ItemPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>

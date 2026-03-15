@@ -6,6 +6,7 @@ import type {
   ExtractArtifact,
   GroundTruthFromRunRequest,
   GroundTruthListResponse,
+  GroundTruthUpdateRequest,
   GroundTruthView,
   JobCreateResponse,
   JobView,
@@ -110,6 +111,35 @@ export async function uploadGroundTruth(file: File): Promise<GroundTruthView> {
 export async function createGroundTruthFromRun(payload: GroundTruthFromRunRequest): Promise<GroundTruthView> {
   const { data } = await fetchJson<GroundTruthView>("/v1/ground_truths/from_run", {
     method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return data;
+}
+
+export async function createGroundTruth(payload: GroundTruthUpdateRequest): Promise<GroundTruthView> {
+  const { data } = await fetchJson<GroundTruthView>("/v1/ground_truths", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return data;
+}
+
+export async function createGroundTruthDraftFromRun(payload: GroundTruthFromRunRequest): Promise<unknown> {
+  const { data } = await fetchJson<unknown>("/v1/ground_truths/from_run/draft", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return data;
+}
+
+export async function getGroundTruthContent(gtId: string): Promise<unknown> {
+  const { data } = await fetchJson<unknown>(`/v1/ground_truths/${encodeURIComponent(gtId)}/content`);
+  return data;
+}
+
+export async function updateGroundTruth(gtId: string, payload: GroundTruthUpdateRequest): Promise<GroundTruthView> {
+  const { data } = await fetchJson<GroundTruthView>(`/v1/ground_truths/${encodeURIComponent(gtId)}`, {
+    method: "PUT",
     body: JSON.stringify(payload),
   });
   return data;

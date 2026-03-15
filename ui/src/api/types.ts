@@ -60,6 +60,11 @@ export type GroundTruthFromRunRequest = {
   name?: string;
 };
 
+export type GroundTruthUpdateRequest = {
+  name: string;
+  content: unknown;
+};
+
 export type RunCatalogItem = {
   run_id: string;
   created_at?: string | null;

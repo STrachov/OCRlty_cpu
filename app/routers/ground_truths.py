@@ -9,11 +9,14 @@ from app.auth import require_scopes
 from app.auth_store import ApiPrincipal
 from app.schemas.api_error import common_error_responses
 from app.services.ground_truths_service import (
+    build_ground_truth_draft_for_principal,
+    create_ground_truth_from_content,
     create_ground_truth_from_run,
     create_ground_truth_from_upload,
     get_ground_truth_for_principal,
     load_ground_truth_json,
     list_ground_truths_for_principal,
+    update_ground_truth_content,
 )
 from app.services.ground_truths_store import GroundTruthRecord, GroundTruthsStore
 
@@ -59,6 +62,16 @@ class GroundTruthFromRunRequest(BaseModel):
     name: str | None = None
 
 
+class GroundTruthUpdateRequest(BaseModel):
+    name: str
+    content: Any
+
+
+class GroundTruthCreateRequest(BaseModel):
+    name: str
+    content: Any
+
+
 @router.post(
     "/upload",
     response_model=GroundTruthView,
@@ -79,6 +92,44 @@ async def upload_ground_truth(
         data=data,
     )
     return _to_view(rec)
+
+
+@router.post(
+    "",
+    response_model=GroundTruthView,
+    responses=_ERR,
+    dependencies=[Depends(require_scopes(["debug:run"]))],
+)
+async def create_ground_truth(
+    body: GroundTruthCreateRequest,
+    request: Request,
+    principal: ApiPrincipal = Depends(require_scopes(["debug:run"])),
+) -> GroundTruthView:
+    store = _store(request)
+    rec = create_ground_truth_from_content(
+        store=store,
+        principal=principal,
+        name=body.name,
+        payload=body.content,
+    )
+    return _to_view(rec)
+
+
+@router.post(
+    "/from_run/draft",
+    response_model=Any,
+    responses=_ERR,
+    dependencies=[Depends(require_scopes(["debug:run"]))],
+)
+async def create_ground_truth_draft_from_run_endpoint(
+    body: GroundTruthFromRunRequest,
+    principal: ApiPrincipal = Depends(require_scopes(["debug:run"])),
+) -> Any:
+    return build_ground_truth_draft_for_principal(
+        principal=principal,
+        run_id=body.run_id,
+        name=body.name,
+    )
 
 
 @router.post(
@@ -149,3 +200,26 @@ async def get_ground_truth_content(
     store = _store(request)
     _, obj = load_ground_truth_json(store=store, principal=principal, gt_id=gt_id)
     return obj
+
+
+@router.put(
+    "/{gt_id}",
+    response_model=GroundTruthView,
+    responses=_ERR,
+    dependencies=[Depends(require_scopes(["debug:run"]))],
+)
+async def update_ground_truth(
+    gt_id: str,
+    body: GroundTruthUpdateRequest,
+    request: Request,
+    principal: ApiPrincipal = Depends(require_scopes(["debug:run"])),
+) -> GroundTruthView:
+    store = _store(request)
+    rec = update_ground_truth_content(
+        store=store,
+        principal=principal,
+        gt_id=gt_id,
+        name=body.name,
+        payload=body.content,
+    )
+    return _to_view(rec)

@@ -31,7 +31,7 @@ function Sep() {
 
 export function Breadcrumbs() {
   const location = useLocation();
-  const { run_id, request_id } = useParams<{ run_id?: string; request_id?: string }>();
+  const { run_id, request_id, gt_id } = useParams<{ run_id?: string; request_id?: string; gt_id?: string }>();
   const queryClient = useQueryClient();
 
   const itemRunId = useMemo(() => {
@@ -86,6 +86,16 @@ export function Breadcrumbs() {
         <CrumbLink to="/ground-truths" label="Ground Truths" />
         <Sep />
         <CrumbCurrent label="New" />
+      </div>
+    );
+  }
+
+  if (location.pathname.startsWith("/ground-truths/") && gt_id) {
+    return (
+      <div className="flex items-center gap-2">
+        <CrumbLink to="/ground-truths" label="Ground Truths" />
+        <Sep />
+        <CrumbCurrent label={gt_id} mono />
       </div>
     );
   }

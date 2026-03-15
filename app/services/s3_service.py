@@ -274,6 +274,21 @@ def s3_put_bytes(*, key: str, data: bytes, content_type: str = "application/octe
             return False
         raise
 
+def s3_put_bytes_overwrite(*, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    body = data or b""
+
+    def _do():
+        kwargs: Dict[str, Any] = {
+            "Bucket": _S3_BUCKET,
+            "Key": key,
+            "Body": body,
+            "ContentType": content_type,
+            "CacheControl": "no-store",
+        }
+        return s3_client().put_object(**kwargs)
+
+    s3_call_with_retries(_do, op="put_object")
+
 def s3_get_text(key: str) -> str:
     return _s3_get_text(key)
 

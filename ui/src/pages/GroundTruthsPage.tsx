@@ -60,8 +60,16 @@ export function GroundTruthsPage() {
               {(groundTruthsQuery.data?.items ?? []).map((item) => (
                 <tr key={item.gt_id} className="border-t border-slate-100">
                   <td className="px-3 py-2">{item.created_at}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{item.gt_id}</td>
-                  <td className="px-3 py-2">{item.name}</td>
+                  <td className="px-3 py-2 font-mono text-xs">
+                    <Link className="text-blue-700 hover:underline" to={`/ground-truths/${encodeURIComponent(item.gt_id)}`}>
+                      {item.gt_id}
+                    </Link>
+                  </td>
+                  <td className="px-3 py-2">
+                    <Link className="text-blue-700 hover:underline" to={`/ground-truths/${encodeURIComponent(item.gt_id)}`}>
+                      {item.name}
+                    </Link>
+                  </td>
                   <td className="px-3 py-2">{String(item.task_id ?? "-")}</td>
                   <td className="px-3 py-2">{String(item.source_type ?? "-")}</td>
                   <td className="px-3 py-2 font-mono text-xs">{String(item.source_run_id ?? "-")}</td>
